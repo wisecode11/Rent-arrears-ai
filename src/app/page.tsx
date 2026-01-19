@@ -110,9 +110,20 @@ export default function Home() {
                 </p>
               </div>
             </div>
-            <div className="hidden lg:flex items-center space-x-2 px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">
-              <TrendingUp className="w-4 h-4 text-slate-700" />
-              <span className="text-xs font-medium text-slate-700">Professional Edition</span>
+            <div className="flex items-center space-x-3">
+              {(processedData || error) && (
+                <button
+                  onClick={handleRetry}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md shadow-sm"
+                  aria-label="Upload another file"
+                >
+                  New Upload
+                </button>
+              )}
+              <div className="hidden lg:flex items-center space-x-2 px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">
+                <TrendingUp className="w-4 h-4 text-slate-700" />
+                <span className="text-xs font-medium text-slate-700">Professional Edition</span>
+              </div>
             </div>
           </div>
         </div>
