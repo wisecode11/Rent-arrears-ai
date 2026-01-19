@@ -125,12 +125,12 @@ export default function Home() {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               <div className="group bg-white/70 backdrop-blur-sm p-8 rounded-2xl shadow-xl border border-white/50 hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
-                <div className="flex items-center space-x-4 mb-4">
+                {/* <div className="flex items-center space-x-4 mb-4">
                   <div className="p-3 bg-gradient-to-br from-amber-400 to-orange-500 rounded-xl shadow-lg group-hover:scale-110 transition-transform duration-300">
                     <Zap className="w-6 h-6 text-white" />
                   </div>
                   <h3 className="text-xl font-bold text-slate-800">AI-Powered Analysis</h3>
-                </div>
+                </div> */}
                 <p className="text-slate-600 leading-relaxed">
                   Advanced Hugging Face LLM technology intelligently extracts and categorizes charges from any PDF format with exceptional accuracy
                 </p>

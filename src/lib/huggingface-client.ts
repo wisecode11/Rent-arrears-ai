@@ -1,4 +1,5 @@
 import { HuggingFaceResponse } from '@/types';
+import { chargesFromLedgerEntries, classifyDescription, parseLedgerFromText } from '@/lib/ledger-parser';
 
 /**
  * Precise prompt for AI extraction - critical for accuracy
@@ -313,8 +314,10 @@ function parseResidentLedgerFormat(extractedText: string): HuggingFaceResponse {
         finalBalance = balance;
       }
       
-      // Determine if rental or non-rental based on charge code
-      const isRental = chgCode === 'affrent' || chgCode === 'rent';
+      const classified = classifyDescription(description);
+      
+      // Determine if rental or non-rental based on charge code + description fallback
+      const isRental = chgCode === 'affrent' || chgCode === 'rent' || classified.isRentalCharge;
       
       // Payments should NEVER be counted as charges
       const isPayment = chgCode === 'chk' || 
@@ -332,6 +335,7 @@ function parseResidentLedgerFormat(extractedText: string): HuggingFaceResponse {
       
       // Non-rental charges: only actual charges, not payments or credits
       const isNonRental = !isRental && !isPayment && !isCredit && (
+        classified.isNonRentalCharge ||
         chgCode === 'latefee' || 
         chgCode === 'secdep' || 
         chgCode === 'nsf' || 
@@ -347,7 +351,7 @@ function parseResidentLedgerFormat(extractedText: string): HuggingFaceResponse {
         debit: charge > 0 ? charge : 0,
         credit: payment > 0 ? payment : 0,
         balance: balance,
-        isRental: isRental
+        isRental: isRental ? true : isNonRental ? false : undefined
       });
       
       // Add to rental charges (only if positive charge, not credits/reversals)
@@ -367,6 +371,7 @@ function parseResidentLedgerFormat(extractedText: string): HuggingFaceResponse {
         else if (chgCode === 'nsf') category = 'bad_check';
         else if (chgCode === 'keyinc') category = 'lockout';
         else if (chgCode === 'uao') category = 'use_of_occupancy';
+        else if (classified.category && classified.category !== 'rent') category = classified.category;
         
         nonRentalCharges.push({
           description: description,
@@ -630,236 +635,32 @@ function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
       }
     }
   }
-  
-  // Extract ALL rental charges (BASE RENT entries) - more flexible regex
-  const rentalCharges: any[] = [];
-  // Match: date, code number, BASE RENT, colon, amount (with flexible spacing)
-  const rentalRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+BASE\s+RENT\s*:?\s*(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})/i;
-  
-  for (const line of lines) {
-    const match = line.match(rentalRegex);
-    if (match) {
-      const dateStr = match[1];
-      const [month, day, year] = dateStr.split('/');
-      const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      const amount = parseFloat(match[2].replace(/,/g, ''));
-      
-      rentalCharges.push({
-        description: 'BASE RENT',
-        amount: amount,
-        date: date
-      });
-    }
+
+  // Generic ledger extraction (handles many different ledger layouts).
+  const { ledgerEntries } = parseLedgerFromText(extractedText);
+  const { rentalCharges, nonRentalCharges } = chargesFromLedgerEntries(ledgerEntries);
+
+  // If opening balance is still unknown, use the first ledger balance (if available)
+  if (openingBalance === 0 && ledgerEntries.length > 0) {
+    openingBalance = ledgerEntries[0].balance;
   }
-  
-  console.log('Extracted rental charges:', rentalCharges.length);
-  
-  // Extract ALL non-rental charges - COMPLETE EXTRACTION
-  const nonRentalCharges: any[] = [];
-  const ledgerEntries: any[] = [];
-  
-  // Pattern for AIR CONDITIONER - handle variable spacing (balance not required at end)
-  const acRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+AIR\s+CONDITIONER\s*:?\s*(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})(?:\s+(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}))?/i;
-  for (const line of lines) {
-    const match = line.match(acRegex);
-    if (match) {
-      const dateStr = match[1];
-      const [month, day, year] = dateStr.split('/');
-      const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      const amount = parseFloat(match[2].replace(/,/g, ''));
-      const balance = parseFloat(match[3].replace(/,/g, ''));
-      
-      nonRentalCharges.push({
-        description: 'AIR CONDITIONER',
-        amount: amount,
-        date: date,
-        category: 'air_conditioner'
-      });
-      
-      ledgerEntries.push({
-        date: date,
-        description: 'AIR CONDITIONER',
-        debit: amount,
-        credit: 0,
-        balance: balance,
-        isRental: false
-      });
-    }
-  }
-  
-  // Pattern for LATE CHARGE / LATE FEE - handle variable spacing and optional text
-  const lateRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+LATE\s+(?:CHARGE|FEE)\s*(?:FOR\s+[^:0-9]+)?\s*:?\s*(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})(?:\s+(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}))?/i;
-  for (const line of lines) {
-    const match = line.match(lateRegex);
-    if (match) {
-      const dateStr = match[1];
-      const [month, day, year] = dateStr.split('/');
-      const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      const amount = parseFloat(match[2].replace(/,/g, ''));
-      const balance = match[3] ? parseFloat(match[3].replace(/,/g, '')) : 0;
-      
-      nonRentalCharges.push({
-        description: 'LATE CHARGE',
-        amount: amount,
-        date: date,
-        category: 'late_fee'
-      });
-      
-      ledgerEntries.push({
-        date: date,
-        description: 'LATE CHARGE',
-        debit: amount,
-        credit: 0,
-        balance: balance,
-        isRental: false
-      });
-    }
-  }
-  
-  // Pattern for LEGAL FEES - handle description text before amount (more flexible)
-  const legalRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+LEGAL\s+FEES\s*:?\s*([^0-9]+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})(?:\s+(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}))?/i;
-  for (const line of lines) {
-    const match = line.match(legalRegex);
-    if (match) {
-      const dateStr = match[1];
-      const [month, day, year] = dateStr.split('/');
-      const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      const description = match[2].trim();
-      const amount = parseFloat(match[3].replace(/,/g, ''));
-      const balance = match[4] ? parseFloat(match[4].replace(/,/g, '')) : 0;
-      
-      nonRentalCharges.push({
-        description: `LEGAL FEES: ${description}`,
-        amount: amount,
-        date: date,
-        category: 'legal_fees'
-      });
-      
-      ledgerEntries.push({
-        date: date,
-        description: `LEGAL FEES: ${description}`,
-        debit: amount,
-        credit: 0,
-        balance: balance,
-        isRental: false
-      });
-    }
-  }
-  
-  // Pattern for BAD CHECK CHARGE - handle RETURN: text (more flexible)
-  const badCheckRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+BAD\s+CHECK\s+CHARGE\s*:?\s*([^0-9]+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})(?:\s+(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}))?/i;
-  for (const line of lines) {
-    const match = line.match(badCheckRegex);
-    if (match) {
-      const dateStr = match[1];
-      const [month, day, year] = dateStr.split('/');
-      const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      const amount = parseFloat(match[3].replace(/,/g, ''));
-      const balance = match[4] ? parseFloat(match[4].replace(/,/g, '')) : 0;
-      
-      nonRentalCharges.push({
-        description: 'BAD CHECK CHARGE',
-        amount: amount,
-        date: date,
-        category: 'bad_check'
-      });
-      
-      ledgerEntries.push({
-        date: date,
-        description: 'BAD CHECK CHARGE',
-        debit: amount,
-        credit: 0,
-        balance: balance,
-        isRental: false
-      });
-    }
-  }
-  
-  // Pattern for SECURITY DEPOSIT (more flexible)
-  const securityRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+SECURITY\s+DEPOSIT\s*:?\s*(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})(?:\s+(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}))?/i;
-  for (const line of lines) {
-    const match = line.match(securityRegex);
-    if (match) {
-      const dateStr = match[1];
-      const [month, day, year] = dateStr.split('/');
-      const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      const amount = parseFloat(match[2].replace(/,/g, ''));
-      const balance = match[3] ? parseFloat(match[3].replace(/,/g, '')) : 0;
-      
-      nonRentalCharges.push({
-        description: 'SECURITY DEPOSIT',
-        amount: amount,
-        date: date,
-        category: 'security_deposit'
-      });
-      
-      ledgerEntries.push({
-        date: date,
-        description: 'SECURITY DEPOSIT',
-        debit: amount,
-        credit: 0,
-        balance: balance,
-        isRental: false
-      });
-    }
-  }
-  
-  // Extract ALL ledger entries including BASE RENT and PAYMENTS - more flexible
-  // Pattern: date, code, description, optional colon, billed amount, paid amount, balance
-  const ledgerRegex = /(\d{2}\/\d{2}\/\d{4})\s+(\d+)\s+([^:]+?):?\s*([-\d,\.]+)?\s*([-\d,\.]+)?\s*(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})/i;
-  for (const line of lines) {
-    // Skip header lines and TOTAL line
-    if (line.toUpperCase().includes('DATE') && line.toUpperCase().includes('DESCRIPTION')) continue;
-    if (line.toUpperCase().includes('TOTAL')) continue;
-    if (line.includes('===') || line.includes('---')) continue;
-    
-    const match = line.match(ledgerRegex);
-    if (match) {
-      const dateStr = match[1];
-      const [month, day, year] = dateStr.split('/');
-      const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      const description = match[3].trim();
-      const billed = match[4] ? parseFloat(match[4].replace(/,/g, '')) : 0;
-      const paid = match[5] ? parseFloat(match[5].replace(/,/g, '')) : 0;
-      const balance = parseFloat(match[6].replace(/,/g, ''));
-      
-      const isRental = description.toUpperCase().includes('BASE RENT') || description.toUpperCase().includes('RENT');
-      const isPayment = description.toUpperCase().includes('PAYMENT');
-      
-      // Only add if not already added as non-rental charge
-      const alreadyAdded = ledgerEntries.some(e => 
-        e.date === date && 
-        e.description === description && 
-        Math.abs(e.balance - balance) < 0.01
-      );
-      
-      if (!alreadyAdded && (isRental || isPayment || !description.match(/^(AIR CONDITIONER|LATE|LEGAL|BAD CHECK|SECURITY)/i))) {
-        ledgerEntries.push({
-          date: date,
-          description: description,
-          debit: billed > 0 ? billed : 0,
-          credit: paid > 0 ? paid : 0,
-          balance: balance,
-          isRental: isRental
-        });
-      }
-    }
-  }
-  
-  // Sort ledger entries by date
-  ledgerEntries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  
-  // Use finalBalance if found, otherwise use last ledger entry balance
+
+  // If final balance isn't found in TOTAL, use the last ledger balance (if available)
   if (finalBalance === 0 && ledgerEntries.length > 0) {
     finalBalance = ledgerEntries[ledgerEntries.length - 1].balance;
   }
-  
-  console.log('Direct parsing complete:', {
+
+  const period =
+    ledgerEntries.length > 0
+      ? `${ledgerEntries[0].date} to ${ledgerEntries[ledgerEntries.length - 1].date}`
+      : 'Extracted Period';
+
+  console.log('Direct parsing complete (generic):', {
     finalBalance,
     openingBalance,
     rentalCharges: rentalCharges.length,
     nonRentalCharges: nonRentalCharges.length,
-    ledgerEntries: ledgerEntries.length
+    ledgerEntries: ledgerEntries.length,
   });
   
   // CRITICAL: finalBalance should NEVER be 0 if we found it in TOTAL line
@@ -887,7 +688,7 @@ function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
   return {
     tenantName,
     propertyName,
-    period: 'Extracted Period',
+    period,
     openingBalance: openingBalance || 0,
     finalBalance: finalBalance || 0, // Don't fallback to openingBalance - keep it 0 if not found
     rentalCharges: rentalCharges.length > 0 ? rentalCharges : [],

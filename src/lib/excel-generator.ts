@@ -62,12 +62,15 @@ export function generateExcelFile(data: ProcessedData): Buffer {
     ['', ''],
     ['Financial Summary', ''],
     ['Opening Balance', data.openingBalance],
-    ['Total Non-Rental Charges', data.totalNonRental],
-    ['Final Rental Amount', data.finalRentalAmount],
+    ['Latest Balance (per date rule)', data.latestBalance],
+    ['Last Zero/Negative Balance Date', data.lastZeroOrNegativeBalanceDate || 'N/A'],
+    ['Total Non-Rental Charges (all)', data.totalNonRental],
+    ['Total Non-Rental Charges (from last <= 0)', data.totalNonRentalFromLastZero],
+    ['Rent Arrears', data.rentArrears],
     ['', ''],
     ['Calculation Logic', ''],
-    ['Final Amount = Opening Balance - Non-Rental Charges', ''],
-    [`${data.finalRentalAmount} = ${data.openingBalance} - ${data.totalNonRental}`, ''],
+    ['Rent Arrears = Latest Balance - Non-Rental Charges (from last <= 0 balance)', ''],
+    [`${data.rentArrears} = ${data.latestBalance} - ${data.totalNonRentalFromLastZero}`, ''],
     ['', ''],
     ['Breakdown', ''],
     [`Total Rental Charges: ${data.rentalCharges.length}`, ''],
@@ -84,9 +87,10 @@ export function generateExcelFile(data: ProcessedData): Buffer {
     { width: 25 }  // Value
   ];
   
-  // Style important cells (Final Rental Amount)
-  if (summarySheet['B9']) {
-    summarySheet['B9'].s = {
+  // Style important cells (Rent Arrears)
+  // Rent Arrears row is B12 with the new layout above.
+  if (summarySheet['B12']) {
+    summarySheet['B12'].s = {
       font: { bold: true, color: { rgb: "FF0000" } },
       fill: { fgColor: { rgb: "FFFF00" } }
     };

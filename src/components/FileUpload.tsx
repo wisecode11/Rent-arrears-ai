@@ -34,8 +34,17 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
   };
 
   const handleFileSelection = (file: File) => {
-    if (file.type !== 'application/pdf') {
-      alert('Please select a PDF file only');
+    const name = (file.name || '').toLowerCase();
+    const isPdf = file.type === 'application/pdf' || name.endsWith('.pdf');
+    const isCsv = file.type === 'text/csv' || name.endsWith('.csv');
+    const isXlsx =
+      name.endsWith('.xlsx') ||
+      name.endsWith('.xls') ||
+      file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      file.type === 'application/vnd.ms-excel';
+
+    if (!isPdf && !isCsv && !isXlsx) {
+      alert('Please select a PDF, CSV, or Excel (XLSX/XLS) file');
       return;
     }
 
@@ -63,7 +72,7 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
       <div className="text-center mb-8">
         <h2 className="text-3xl font-bold text-slate-800 mb-3">Upload Your Rental Arrears Document</h2>
         <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-          Our AI will automatically extract and analyze all charges from your PDF document
+          Automatically extract ledger entries and calculate rent arrears from PDF, CSV, or Excel files
         </p>
       </div>
 
@@ -86,7 +95,7 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
         <input
           ref={fileInputRef}
           type="file"
-          accept=".pdf"
+          accept=".pdf,.csv,.xlsx,.xls"
           onChange={handleInputChange}
           className="hidden"
           disabled={isProcessing}
@@ -112,7 +121,7 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
                     {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
                   </span>
                   <span className="px-3 py-1 bg-emerald-100 text-emerald-700 rounded-full text-sm font-medium">
-                    PDF Document
+                    Document
                   </span>
                 </div>
               </div>
@@ -132,10 +141,10 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
               </div>
               <div className="text-center">
                 <p className="text-2xl font-bold text-slate-800 mb-2">
-                  Upload Rental Arrears PDF
+                  Upload Rental Arrears File
                 </p>
                 <p className="text-lg text-slate-600 mb-4">
-                  Drag and drop your PDF here, or click to browse
+                  Drag and drop your PDF, CSV, or Excel file here, or click to browse
                 </p>
                 <div className="inline-flex items-center space-x-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-105">
                   <Upload className="w-5 h-5" />

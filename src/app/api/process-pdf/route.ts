@@ -2,56 +2,76 @@ import { NextRequest, NextResponse } from 'next/server';
 import { extractPDFText, validatePDFFile } from '@/lib/pdf-processor';
 import { analyzeWithAI, validateHuggingFaceConfig } from '@/lib/huggingface-client';
 import { calculateFinalAmount, validateProcessedData } from '@/lib/business-logic';
+import { analyzeSpreadsheet } from '@/lib/spreadsheet-processor';
 import { APIResponse } from '@/types';
 
 export async function POST(request: NextRequest) {
   try {
-    // Validate Hugging Face configuration
-    if (!validateHuggingFaceConfig()) {
-      return NextResponse.json({
-        success: false,
-        error: 'Hugging Face API key not configured'
-      } as APIResponse, { status: 500 });
-    }
-
     // Parse form data
     const formData = await request.formData();
-    const file = formData.get('pdf') as File;
+    const file = (formData.get('file') || formData.get('pdf')) as File;
 
     if (!file) {
       return NextResponse.json({
         success: false,
-        error: 'No PDF file provided'
+        error: 'No file provided'
       } as APIResponse, { status: 400 });
     }
 
-    // Validate PDF file
-    const validation = validatePDFFile(file);
-    if (!validation.valid) {
-      return NextResponse.json({
-        success: false,
-        error: validation.error
-      } as APIResponse, { status: 400 });
-    }
+    const filename = file.name || '';
+    const lowerName = filename.toLowerCase();
+    const isPdf = file.type === 'application/pdf' || lowerName.endsWith('.pdf');
+    const isCsv = file.type === 'text/csv' || lowerName.endsWith('.csv');
+    const isXlsx =
+      lowerName.endsWith('.xlsx') ||
+      lowerName.endsWith('.xls') ||
+      file.type ===
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      file.type === 'application/vnd.ms-excel';
 
     // Convert file to buffer
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Step 1: Extract text from PDF
-    console.log('Extracting text from PDF...');
-    const extractedText = await extractPDFText(buffer);
-    
-    if (!extractedText || extractedText.length < 50) {
+    let extractedText = '';
+
+    // Step 1: Extract/parse into structured data
+    let aiData;
+    if (isPdf) {
+      // Validate PDF file
+      const validation = validatePDFFile(file);
+      if (!validation.valid) {
+        return NextResponse.json({
+          success: false,
+          error: validation.error
+        } as APIResponse, { status: 400 });
+      }
+
+      console.log('Extracting text from PDF...');
+      extractedText = await extractPDFText(buffer);
+      
+      if (!extractedText || extractedText.length < 50) {
+        return NextResponse.json({
+          success: false,
+          error: 'Could not extract meaningful text from PDF'
+        } as APIResponse, { status: 400 });
+      }
+
+      console.log('Analyzing document (direct parsing + optional AI fallback)...');
+      if (!validateHuggingFaceConfig()) {
+        console.log('⚠️ Hugging Face API key not configured; using deterministic parsing only');
+      }
+      aiData = await analyzeWithAI(extractedText);
+    } else if (isCsv || isXlsx) {
+      console.log('Parsing spreadsheet (CSV/XLSX)...');
+      aiData = analyzeSpreadsheet(buffer);
+      extractedText = `Parsed ${aiData.ledgerEntries?.length ?? 0} ledger rows from spreadsheet.`;
+    } else {
       return NextResponse.json({
         success: false,
-        error: 'Could not extract meaningful text from PDF'
+        error: 'Unsupported file type. Please upload a PDF, CSV, or XLSX.'
       } as APIResponse, { status: 400 });
     }
-
-    // Step 2: Analyze with AI
-    console.log('Analyzing with Hugging Face AI...');
-    const aiData = await analyzeWithAI(extractedText);
 
     // Step 3: Apply business logic
     console.log('Applying business logic...');
