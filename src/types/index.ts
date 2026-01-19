@@ -37,6 +37,8 @@ export interface ProcessedData {
   latestBalance: number;
   totalNonRentalFromLastZero: number;
   rentArrears: number;
+  // Extracted text from PDF for Excel report
+  extractedText?: string;
 }
 
 export interface APIResponse {

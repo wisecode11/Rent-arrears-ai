@@ -50,12 +50,18 @@ export default function Home() {
     setIsGeneratingExcel(true);
 
     try {
+      // Include extractedText in processedData for Excel generation
+      const dataWithExtractedText = {
+        ...processedData,
+        extractedText: extractedText || undefined
+      };
+
       const response = await fetch('/api/generate-excel', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(processedData),
+        body: JSON.stringify(dataWithExtractedText),
       });
 
       if (response.ok) {
