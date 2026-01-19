@@ -42,42 +42,42 @@ export default function ProcessingResults({
     <div className="w-full max-w-7xl mx-auto space-y-8">
       {/* Success Header */}
       <div className="text-center mb-8">
-        <div className="inline-flex items-center space-x-3 px-6 py-3 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-2xl mb-4">
-          <CheckCircle className="w-6 h-6 text-emerald-600" />
-          <span className="text-lg font-semibold text-emerald-800">Processing Complete</span>
+        <div className="inline-flex items-center space-x-3 px-5 py-2.5 bg-emerald-50 border border-emerald-200 rounded-full mb-4">
+          <CheckCircle className="w-5 h-5 text-emerald-700" />
+          <span className="text-sm font-medium text-emerald-800">Processing Complete</span>
         </div>
-        <h2 className="text-3xl font-bold text-slate-800 mb-2">Analysis Results</h2>
-        <p className="text-lg text-slate-600">Your rental arrears document has been successfully processed</p>
+        <h2 className="text-2xl sm:text-3xl font-semibold text-slate-900 mb-2">Analysis Results</h2>
+        <p className="text-base sm:text-lg text-slate-600">Your rental arrears document has been successfully processed</p>
       </div>
 
       {/* Summary Card */}
-      <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-2xl p-8 border border-white/50">
+      <div className="bg-white rounded-2xl shadow-sm p-8 border border-slate-200">
         <div className="flex items-center justify-between mb-8">
-          <h3 className="text-2xl font-bold text-slate-800">Financial Overview</h3>
-          <div className="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-full border border-blue-200">
-            <TrendingUp className="w-5 h-5 text-blue-600" />
-            <span className="text-sm font-semibold text-blue-700">Professional Analysis</span>
+          <h3 className="text-xl sm:text-2xl font-semibold text-slate-900">Financial Overview</h3>
+          <div className="hidden sm:flex items-center space-x-2 px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">
+            <TrendingUp className="w-4 h-4 text-slate-700" />
+            <span className="text-xs font-medium text-slate-700">Professional Analysis</span>
           </div>
         </div>
 
         {/* Property Information */}
         <div className="mb-8">
-          <h4 className="text-xl font-bold text-slate-800 flex items-center space-x-2 mb-6">
-            <div className="p-2 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg">
+          <h4 className="text-lg sm:text-xl font-semibold text-slate-900 flex items-center space-x-2 mb-6">
+            <div className="p-2 bg-blue-600 rounded-md">
               <Calendar className="w-5 h-5 text-white" />
             </div>
             <span>Property Details</span>
           </h4>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="p-4 bg-gradient-to-r from-slate-50 to-gray-50 rounded-xl border border-slate-200">
+            <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
               <span className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Tenant</span>
               <p className="text-lg font-bold text-slate-900 mt-1">{data.tenantName}</p>
             </div>
-            <div className="p-4 bg-gradient-to-r from-slate-50 to-gray-50 rounded-xl border border-slate-200">
+            <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
               <span className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Property</span>
               <p className="text-lg font-bold text-slate-900 mt-1">{data.propertyName}</p>
             </div>
-            <div className="p-4 bg-gradient-to-r from-slate-50 to-gray-50 rounded-xl border border-slate-200">
+            <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
               <span className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Period</span>
               <p className="text-lg font-bold text-slate-900 mt-1">{data.period}</p>
             </div>
@@ -87,10 +87,10 @@ export default function ProcessingResults({
         {/* Key Financial Metrics - Clean Dashboard */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
           {/* Latest Balance Card */}
-          <div className="bg-gradient-to-br from-blue-50 to-indigo-100 rounded-2xl shadow-xl p-8 border-2 border-blue-200">
+          <div className="bg-blue-50 rounded-xl shadow-sm p-8 border border-blue-200">
             <div className="flex items-center justify-between mb-4">
-              <h4 className="text-xl font-bold text-slate-800 flex items-center space-x-2">
-                <div className="p-2 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg">
+              <h4 className="text-xl font-semibold text-slate-900 flex items-center space-x-2">
+                <div className="p-2 bg-blue-600 rounded-md">
                   <DollarSign className="w-6 h-6 text-white" />
                 </div>
                 <span>Latest Balance</span>
@@ -98,7 +98,7 @@ export default function ProcessingResults({
             </div>
             <div className="mt-6">
               <p className="text-sm font-semibold text-slate-600 uppercase tracking-wide mb-2">Current Balance</p>
-              <p className="text-4xl font-bold text-blue-900">
+              <p className="text-3xl sm:text-4xl font-bold text-blue-900">
                 {formatCurrency(data.latestBalance !== undefined ? data.latestBalance : data.openingBalance)}
               </p>
               {data.lastZeroOrNegativeBalanceDate && (
@@ -115,10 +115,10 @@ export default function ProcessingResults({
           </div>
 
           {/* Total Non-Rental Charges Card */}
-          <div className="bg-gradient-to-br from-orange-50 to-red-100 rounded-2xl shadow-xl p-8 border-2 border-orange-200">
+          <div className="bg-orange-50 rounded-xl shadow-sm p-8 border border-orange-200">
             <div className="flex items-center justify-between mb-4">
-              <h4 className="text-xl font-bold text-slate-800 flex items-center space-x-2">
-                <div className="p-2 bg-gradient-to-br from-orange-500 to-red-600 rounded-lg">
+              <h4 className="text-xl font-semibold text-slate-900 flex items-center space-x-2">
+                <div className="p-2 bg-orange-600 rounded-md">
                   <AlertTriangle className="w-6 h-6 text-white" />
                 </div>
                 <span>Total Non-Rental Charges</span>
@@ -128,7 +128,7 @@ export default function ProcessingResults({
               <p className="text-sm font-semibold text-slate-600 uppercase tracking-wide mb-2">
                 From Last Zero/Negative Balance
               </p>
-              <p className="text-4xl font-bold text-orange-900">
+              <p className="text-3xl sm:text-4xl font-bold text-orange-900">
                 {formatCurrency(data.totalNonRentalFromLastZero !== undefined ? data.totalNonRentalFromLastZero : data.totalNonRental)}
               </p>
               <p className="text-xs text-slate-600 mt-3">
@@ -144,10 +144,10 @@ export default function ProcessingResults({
         </div>
 
         {/* Rent Arrears Card - Separate Card */}
-        <div className="bg-gradient-to-br from-emerald-50 to-teal-100 rounded-2xl shadow-xl p-8 border-2 border-emerald-200 mb-8">
+        <div className="bg-emerald-50 rounded-xl shadow-sm p-8 border border-emerald-200 mb-8">
           <div className="flex items-center justify-between mb-4">
-            <h4 className="text-2xl font-bold text-slate-800 flex items-center space-x-2">
-              <div className="p-3 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-lg">
+            <h4 className="text-2xl font-semibold text-slate-900 flex items-center space-x-2">
+              <div className="p-3 bg-emerald-600 rounded-md">
                 <TrendingUp className="w-7 h-7 text-white" />
               </div>
               <span>Total Rent Arrears</span>
@@ -155,10 +155,10 @@ export default function ProcessingResults({
           </div>
           <div className="mt-6">
             <p className="text-sm font-semibold text-slate-600 uppercase tracking-wide mb-2">Calculated Amount</p>
-            <p className={`text-5xl font-bold ${(data.rentArrears !== undefined ? data.rentArrears : data.finalRentalAmount) >= 0 ? 'text-red-700' : 'text-emerald-700'}`}>
+            <p className={`text-4xl sm:text-5xl font-bold ${(data.rentArrears !== undefined ? data.rentArrears : data.finalRentalAmount) >= 0 ? 'text-red-700' : 'text-emerald-700'}`}>
               {formatCurrency(data.rentArrears !== undefined ? data.rentArrears : data.finalRentalAmount)}
             </p>
-            <div className="mt-6 p-4 bg-white/60 backdrop-blur-sm rounded-xl border border-emerald-200">
+            <div className="mt-6 p-4 bg-white rounded-lg border border-emerald-200">
               <p className="text-sm font-semibold text-emerald-800 mb-2">Calculation Formula:</p>
               <p className="text-emerald-700 font-mono text-sm">
                 Rent Arrears = Latest Balance - Total Non-Rental Charges (from last zero/negative)
@@ -174,21 +174,21 @@ export default function ProcessingResults({
       {/* Charges Breakdown */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
         {/* Rental Charges */}
-        <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl p-8 border border-white/50">
+        <div className="bg-white rounded-2xl shadow-sm p-8 border border-slate-200">
           <div className="flex items-center justify-between mb-6">
-            <h3 className="text-2xl font-bold text-slate-800">Rental Charges</h3>
-            <div className="px-4 py-2 bg-gradient-to-r from-blue-100 to-indigo-100 rounded-full border border-blue-200">
-              <span className="text-sm font-bold text-blue-700">{data.rentalCharges.length} Items</span>
+            <h3 className="text-xl sm:text-2xl font-semibold text-slate-900">Rental Charges</h3>
+            <div className="px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">
+              <span className="text-xs font-medium text-slate-700">{data.rentalCharges.length} Items</span>
             </div>
           </div>
           
           {data.rentalCharges.length > 0 ? (
             <div className="space-y-4">
               {data.rentalCharges.map((charge, index) => (
-                <div key={index} className="group p-4 bg-gradient-to-r from-slate-50 to-gray-50 hover:from-blue-50 hover:to-indigo-50 rounded-xl border border-slate-200 hover:border-blue-300 transition-all duration-200">
+                <div key={index} className="group p-4 bg-slate-50 hover:bg-blue-50 rounded-lg border border-slate-200 hover:border-blue-300 transition-colors duration-150">
                   <div className="flex justify-between items-start">
                     <div className="flex-1">
-                      <p className="font-semibold text-slate-900 group-hover:text-blue-900 transition-colors">
+                      <p className="font-medium text-slate-900 group-hover:text-blue-900 transition-colors">
                         {charge.description}
                       </p>
                       {charge.date && (
@@ -199,7 +199,7 @@ export default function ProcessingResults({
                       )}
                     </div>
                     <div className="ml-4">
-                      <span className="text-lg font-bold text-slate-900 group-hover:text-blue-900 transition-colors">
+                      <span className="text-lg font-semibold text-slate-900 group-hover:text-blue-900 transition-colors">
                         {formatCurrency(charge.amount)}
                       </span>
                     </div>
@@ -218,26 +218,26 @@ export default function ProcessingResults({
         </div>
 
         {/* Non-Rental Charges - MOST IMPORTANT */}
-        <div className="bg-gradient-to-br from-orange-50 to-red-50 rounded-3xl shadow-xl p-8 border-2 border-orange-200">
+        <div className="bg-orange-50 rounded-2xl shadow-sm p-8 border border-orange-200">
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h3 className="text-2xl font-bold text-orange-800">Non-Rental Charges</h3>
-              <span className="inline-block px-3 py-1 bg-gradient-to-r from-orange-200 to-red-200 text-orange-800 text-sm font-bold rounded-full mt-2">
+              <h3 className="text-xl sm:text-2xl font-semibold text-orange-900">Non-Rental Charges</h3>
+              <span className="inline-block px-2.5 py-0.5 bg-orange-200 text-orange-900 text-xs font-medium rounded-full mt-2">
                 MOST IMPORTANT
               </span>
             </div>
-            <div className="px-4 py-2 bg-gradient-to-r from-orange-200 to-red-200 rounded-full border border-orange-300">
-              <span className="text-sm font-bold text-orange-800">{data.nonRentalCharges.length} Items</span>
+            <div className="px-3 py-1.5 bg-orange-100 rounded-full border border-orange-200">
+              <span className="text-xs font-medium text-orange-900">{data.nonRentalCharges.length} Items</span>
             </div>
           </div>
           
           {data.nonRentalCharges.length > 0 ? (
             <div className="space-y-4">
               {data.nonRentalCharges.map((charge, index) => (
-                <div key={index} className="group p-4 bg-white/70 backdrop-blur-sm hover:bg-white/90 rounded-xl border border-orange-200 hover:border-orange-300 transition-all duration-200 hover:shadow-lg">
+                <div key={index} className="group p-4 bg-white hover:bg-orange-50 rounded-lg border border-orange-200 hover:border-orange-300 transition-colors duration-150">
                   <div className="flex justify-between items-start">
                     <div className="flex-1">
-                      <p className="font-semibold text-slate-900 group-hover:text-orange-900 transition-colors">
+                      <p className="font-medium text-slate-900 group-hover:text-orange-900 transition-colors">
                         {charge.description}
                       </p>
                       <div className="flex items-center space-x-4 mt-2 text-sm text-slate-600">
@@ -248,24 +248,24 @@ export default function ProcessingResults({
                           </div>
                         )}
                         {charge.category && (
-                          <span className="px-2 py-1 bg-orange-100 text-orange-700 rounded-full text-xs font-medium">
+                          <span className="px-2 py-0.5 bg-orange-100 text-orange-800 rounded-full text-xs font-medium">
                             {charge.category}
                           </span>
                         )}
                       </div>
                     </div>
                     <div className="ml-4">
-                      <span className="text-lg font-bold text-orange-800 group-hover:text-orange-900 transition-colors">
+                      <span className="text-lg font-semibold text-orange-900 group-hover:text-orange-900 transition-colors">
                         {formatCurrency(charge.amount)}
                       </span>
                     </div>
                   </div>
                 </div>
               ))}
-              <div className="border-t-2 border-orange-300 pt-4 mt-6">
-                <div className="flex justify-between items-center p-4 bg-gradient-to-r from-orange-200 to-red-200 rounded-xl">
-                  <span className="text-xl font-bold text-orange-900">Total Non-Rental:</span>
-                  <span className="text-2xl font-bold text-orange-900">
+              <div className="border-t border-orange-300 pt-4 mt-6">
+                <div className="flex justify-between items-center p-4 bg-orange-100 rounded-lg">
+                  <span className="text-lg font-semibold text-orange-900">Total Non-Rental:</span>
+                  <span className="text-xl sm:text-2xl font-bold text-orange-900">
                     {formatCurrency(data.totalNonRental)}
                   </span>
                 </div>
@@ -284,12 +284,12 @@ export default function ProcessingResults({
 
       {/* Extracted Text Preview */}
       {extractedText && (
-        <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl p-8 border border-white/50">
+        <div className="bg-white rounded-2xl shadow-sm p-8 border border-slate-200">
           <div className="flex items-center justify-between mb-6">
-            <h3 className="text-2xl font-bold text-slate-800">Document Text Preview</h3>
+            <h3 className="text-xl sm:text-2xl font-semibold text-slate-900">Document Text Preview</h3>
             <button
               onClick={() => setShowExtractedText(!showExtractedText)}
-              className="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-slate-100 to-gray-100 hover:from-slate-200 hover:to-gray-200 rounded-xl transition-all duration-200 border border-slate-300"
+              className="flex items-center space-x-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors duration-150 border border-slate-300"
             >
               {showExtractedText ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
               <span className="font-medium">{showExtractedText ? 'Hide Text' : 'Show Text'}</span>
@@ -297,7 +297,7 @@ export default function ProcessingResults({
           </div>
           
           {showExtractedText && (
-            <div className="bg-gradient-to-br from-slate-50 to-gray-50 p-6 rounded-2xl border border-slate-200 max-h-96 overflow-y-auto">
+            <div className="bg-slate-50 p-6 rounded-lg border border-slate-200 max-h-96 overflow-y-auto">
               <pre className="text-sm text-slate-700 whitespace-pre-wrap font-mono leading-relaxed">
                 {extractedText}
               </pre>
@@ -314,7 +314,7 @@ export default function ProcessingResults({
         <button
           onClick={onDownloadExcel}
           disabled={isGeneratingExcel}
-          className="group inline-flex items-center space-x-3 px-8 py-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 disabled:from-slate-400 disabled:to-gray-400 text-white font-bold text-lg rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-105 disabled:hover:scale-100"
+          className="group inline-flex items-center space-x-3 px-8 py-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white font-medium text-lg rounded-xl shadow-sm transition-colors"
         >
           {isGeneratingExcel ? (
             <>
@@ -323,7 +323,7 @@ export default function ProcessingResults({
             </>
           ) : (
             <>
-              <div className="p-2 bg-white/20 rounded-lg group-hover:bg-white/30 transition-colors">
+              <div className="p-2 bg-white/20 rounded-lg">
                 <FileSpreadsheet className="w-6 h-6" />
               </div>
               <span>Download Professional Excel Report</span>

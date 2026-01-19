@@ -51,13 +51,17 @@ function pickLatestBalanceByDateRule(
 }
 
 export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date = new Date()): ProcessedData {
-  // Calculate total non-rental charges (all charges)
+  // Calculate total non-rental charges (ALL charges from beginning to end)
+  // Example: If there are charges from 2019 to 2025, this sums ALL of them
+  // This is the $8,675.00 shown as "Total non-rental charges"
   const totalNonRental = aiData.nonRentalCharges.reduce(
     (sum, charge) => sum + Math.abs(charge.amount), 
     0
   );
   
   // Step 1: Find the last zero or negative balance
+  // This finds the most recent date when balance was $0.00 or negative
+  // Example: "Last zero/negative balance: 04/06/2024"
   let lastZeroOrNegativeBalanceDate: string | undefined;
   let lastZeroOrNegativeBalance: number | undefined;
   let lastZeroOrNegativeIndex: number | undefined;
@@ -80,6 +84,10 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   }
   
   // Step 2: Add up non-rent charges from the last zero/negative balance point onward
+  // IMPORTANT FORMULA DIFFERENCE:
+  // - totalNonRental = ALL non-rental charges (e.g., $8,675.00)
+  // - totalNonRentalFromLastZero = ONLY charges AFTER last zero/negative date (e.g., $975.00)
+  // Example: If last zero was 04/06/2024, this only counts charges from 04/07/2024 onwards
   let totalNonRentalFromLastZero = 0;
   
   if (typeof lastZeroOrNegativeIndex === 'number' && aiData.ledgerEntries) {
@@ -88,6 +96,8 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     );
 
     // Count only entries AFTER the last <= 0 balance row.
+    // This loop starts from lastZeroOrNegativeIndex + 1, meaning it skips
+    // all entries before/at the last zero date and only counts later charges
     for (let i = lastZeroOrNegativeIndex + 1; i < sortedEntries.length; i++) {
       const entry = sortedEntries[i];
       const debit = entry.debit ?? 0;

@@ -5,7 +5,7 @@ import FileUpload from '@/components/FileUpload';
 import ProcessingResults from '@/components/ProcessingResults';
 import ErrorDisplay from '@/components/ErrorDisplay';
 import { ProcessedData, APIResponse } from '@/types';
-import { FileText, Zap, Download, Shield, Building2, TrendingUp } from 'lucide-react';
+import { Building2, TrendingUp } from 'lucide-react';
 
 export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false);
@@ -86,27 +86,27 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
+    <div className="min-h-screen bg-slate-50">
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-sm shadow-lg border-b border-slate-200/60">
+      <header className="bg-white shadow-sm border-b border-slate-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <div className="p-3 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-xl shadow-lg">
+              <div className="p-3 bg-blue-600 rounded-xl shadow-sm">
                 <Building2 className="w-8 h-8 text-white" />
               </div>
               <div>
-                <h1 className="text-4xl font-bold bg-gradient-to-r from-slate-900 via-blue-900 to-indigo-900 bg-clip-text text-transparent">
+                <h1 className="text-3xl sm:text-4xl font-semibold text-slate-900">
                   Rental Arrears Processor
                 </h1>
-                <p className="text-slate-600 mt-2 text-lg font-medium">
+                <p className="text-slate-600 mt-1 text-base sm:text-lg">
                   Enterprise-grade AI-powered PDF processing for accurate rental arrears calculations
                 </p>
               </div>
             </div>
-            <div className="hidden lg:flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-emerald-50 to-teal-50 rounded-full border border-emerald-200">
-              <TrendingUp className="w-5 h-5 text-emerald-600" />
-              <span className="text-sm font-semibold text-emerald-700">Professional Edition</span>
+            <div className="hidden lg:flex items-center space-x-2 px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">
+              <TrendingUp className="w-4 h-4 text-slate-700" />
+              <span className="text-xs font-medium text-slate-700">Professional Edition</span>
             </div>
           </div>
         </div>
@@ -116,49 +116,12 @@ export default function Home() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
         {/* Features Banner */}
         {!processedData && !error && (
-          <div className="mb-12">
-            <div className="text-center mb-8">
-              <h2 className="text-2xl font-bold text-slate-800 mb-3">Powerful Features</h2>
+          <div className="mb-8">
+            <div className="text-center mb-0">
+              <h2 className="text-2xl font-semibold text-slate-900 mb-2">Powerful Features</h2>
               <p className="text-slate-600 max-w-2xl mx-auto">
                 Advanced AI technology combined with precise business logic to deliver accurate rental arrears processing
               </p>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-              <div className="group bg-white/70 backdrop-blur-sm p-8 rounded-2xl shadow-xl border border-white/50 hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
-                {/* <div className="flex items-center space-x-4 mb-4">
-                  <div className="p-3 bg-gradient-to-br from-amber-400 to-orange-500 rounded-xl shadow-lg group-hover:scale-110 transition-transform duration-300">
-                    <Zap className="w-6 h-6 text-white" />
-                  </div>
-                  <h3 className="text-xl font-bold text-slate-800">AI-Powered Analysis</h3>
-                </div> */}
-                <p className="text-slate-600 leading-relaxed">
-                  Advanced Hugging Face LLM technology intelligently extracts and categorizes charges from any PDF format with exceptional accuracy
-                </p>
-              </div>
-              
-              <div className="group bg-white/70 backdrop-blur-sm p-8 rounded-2xl shadow-xl border border-white/50 hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
-                <div className="flex items-center space-x-4 mb-4">
-                  <div className="p-3 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-xl shadow-lg group-hover:scale-110 transition-transform duration-300">
-                    <Download className="w-6 h-6 text-white" />
-                  </div>
-                  <h3 className="text-xl font-bold text-slate-800">Professional Reports</h3>
-                </div>
-                <p className="text-slate-600 leading-relaxed">
-                  Generate comprehensive Excel reports with structured data sheets, detailed breakdowns, and professional formatting
-                </p>
-              </div>
-              
-              <div className="group bg-white/70 backdrop-blur-sm p-8 rounded-2xl shadow-xl border border-white/50 hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
-                <div className="flex items-center space-x-4 mb-4">
-                  <div className="p-3 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-lg group-hover:scale-110 transition-transform duration-300">
-                    <Shield className="w-6 h-6 text-white" />
-                  </div>
-                  <h3 className="text-xl font-bold text-slate-800">Precise Calculations</h3>
-                </div>
-                <p className="text-slate-600 leading-relaxed">
-                  Enterprise-grade business logic ensures accurate calculations: Final Amount = Opening Balance - Non-Rental Charges
-                </p>
-              </div>
             </div>
           </div>
         )}

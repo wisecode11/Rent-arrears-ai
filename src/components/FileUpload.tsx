@@ -70,21 +70,21 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
   return (
     <div className="w-full max-w-4xl mx-auto">
       <div className="text-center mb-8">
-        <h2 className="text-3xl font-bold text-slate-800 mb-3">Upload Your Rental Arrears Document</h2>
-        <p className="text-lg text-slate-600 max-w-2xl mx-auto">
+        <h2 className="text-2xl sm:text-3xl font-semibold text-slate-900 mb-2">Upload Your Rental Arrears Document</h2>
+        <p className="text-base sm:text-lg text-slate-600 max-w-2xl mx-auto">
           Automatically extract ledger entries and calculate rent arrears from PDF, CSV, or Excel files
         </p>
       </div>
 
       <div
         className={`
-          relative border-2 border-dashed rounded-3xl p-12 text-center transition-all duration-300 cursor-pointer
+          relative border-2 border-dashed rounded-2xl p-10 text-center transition-all duration-200 cursor-pointer
           ${dragActive 
-            ? 'border-blue-500 bg-gradient-to-br from-blue-50 to-indigo-50 scale-105' 
-            : 'border-slate-300 hover:border-slate-400 bg-white/50 backdrop-blur-sm hover:bg-white/70'
+            ? 'border-blue-500 bg-blue-50' 
+            : 'border-slate-300 hover:border-slate-400 bg-white'
           }
           ${isProcessing ? 'opacity-50 pointer-events-none' : ''}
-          shadow-xl hover:shadow-2xl
+          shadow-sm hover:shadow-md
         `}
         onDragEnter={handleDrag}
         onDragLeave={handleDrag}
@@ -105,10 +105,10 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
           {selectedFile ? (
             <>
               <div className="relative">
-                <div className="p-6 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-2xl shadow-lg">
+                <div className="p-6 bg-emerald-600 rounded-xl shadow-sm">
                   <FileText className="w-16 h-16 text-white" />
                 </div>
-                <div className="absolute -top-2 -right-2 p-2 bg-emerald-500 rounded-full shadow-lg">
+                <div className="absolute -top-2 -right-2 p-2 bg-emerald-500 rounded-full shadow-sm">
                   <CheckCircle2 className="w-6 h-6 text-white" />
                 </div>
               </div>
@@ -134,19 +134,19 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
           ) : (
             <>
               <div className="relative">
-                <div className="p-6 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl shadow-lg">
+                <div className="p-6 bg-blue-600 rounded-xl shadow-sm">
                   <CloudUpload className="w-16 h-16 text-white" />
                 </div>
-                <div className="absolute inset-0 bg-gradient-to-br from-blue-400 to-indigo-500 rounded-2xl animate-pulse opacity-30"></div>
+                <div className="absolute inset-0 bg-blue-500 rounded-xl animate-pulse opacity-10"></div>
               </div>
               <div className="text-center">
-                <p className="text-2xl font-bold text-slate-800 mb-2">
+                <p className="text-2xl font-semibold text-slate-900 mb-2">
                   Upload Rental Arrears File
                 </p>
-                <p className="text-lg text-slate-600 mb-4">
+                <p className="text-base sm:text-lg text-slate-600 mb-4">
                   Drag and drop your PDF, CSV, or Excel file here, or click to browse
                 </p>
-                <div className="inline-flex items-center space-x-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-105">
+                <div className="inline-flex items-center space-x-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg shadow-sm transition-all duration-150">
                   <Upload className="w-5 h-5" />
                   <span>Choose File</span>
                 </div>
@@ -171,13 +171,13 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
         )}
       </div>
 
-      <div className="mt-8 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl p-6">
+      <div className="mt-8 bg-amber-50 border border-amber-200 rounded-xl p-6">
         <div className="flex items-start space-x-3">
-          <div className="p-2 bg-amber-100 rounded-lg">
+          <div className="p-2 bg-amber-100 rounded-md">
             <AlertCircle className="w-5 h-5 text-amber-600" />
           </div>
           <div className="flex-1">
-            <h4 className="font-semibold text-amber-800 mb-2">Document Requirements</h4>
+            <h4 className="font-semibold text-amber-900 mb-2">Document Requirements</h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-amber-700">
               <div className="flex items-center space-x-2">
                 <div className="w-2 h-2 bg-amber-400 rounded-full"></div>
