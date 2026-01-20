@@ -70,21 +70,24 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
   return (
     <div className="w-full max-w-4xl mx-auto">
       <div className="text-center mb-8">
-        <h2 className="text-2xl sm:text-3xl font-semibold text-slate-900 mb-2">Upload Your Rental Arrears Document</h2>
-        <p className="text-base sm:text-lg text-slate-600 max-w-2xl mx-auto">
+        <h2 className="text-2xl sm:text-3xl font-semibold text-white tracking-tight mb-2">
+          Upload your rental arrears file
+        </h2>
+        <p className="text-base sm:text-lg text-slate-300 max-w-2xl mx-auto">
           Automatically extract ledger entries and calculate rent arrears from PDF, CSV, or Excel files
         </p>
       </div>
 
       <div
         className={`
-          relative border-2 border-dashed rounded-2xl p-10 text-center transition-all duration-200 cursor-pointer
+          group relative overflow-hidden border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer
+          transition-all duration-200 ease-out
           ${dragActive 
-            ? 'border-blue-500 bg-blue-50' 
-            : 'border-slate-300 hover:border-slate-400 bg-white'
+            ? 'border-indigo-400 bg-white/5 ring-1 ring-indigo-400/30' 
+            : 'border-white/15 hover:border-white/25 bg-slate-950/35 hover:bg-slate-950/45 ring-1 ring-white/10'
           }
           ${isProcessing ? 'opacity-50 pointer-events-none' : ''}
-          shadow-sm hover:shadow-md
+          shadow-sm hover:shadow-xl hover:-translate-y-0.5
         `}
         onDragEnter={handleDrag}
         onDragLeave={handleDrag}
@@ -92,6 +95,9 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
         onDrop={handleDrop}
         onClick={openFileDialog}
       >
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(600px_200px_at_50%_-20%,rgba(99,102,241,0.35),transparent_60%),radial-gradient(500px_260px_at_80%_120%,rgba(16,185,129,0.20),transparent_55%)] opacity-70" />
+        <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-[radial-gradient(800px_220px_at_50%_0%,rgba(255,255,255,0.06),transparent_60%)]" />
+
         <input
           ref={fileInputRef}
           type="file"
@@ -101,52 +107,55 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
           disabled={isProcessing}
         />
 
-        <div className="flex flex-col items-center space-y-6">
+        <div className="relative flex flex-col items-center space-y-6">
           {selectedFile ? (
             <>
               <div className="relative">
-                <div className="p-6 bg-emerald-600 rounded-xl shadow-sm">
+                <div className="p-6 rounded-2xl shadow-sm ring-1 ring-white/10 bg-gradient-to-br from-emerald-500 to-teal-500">
                   <FileText className="w-16 h-16 text-white" />
                 </div>
-                <div className="absolute -top-2 -right-2 p-2 bg-emerald-500 rounded-full shadow-sm">
+                <div className="absolute -top-2 -right-2 p-2 bg-emerald-500 rounded-full shadow-sm ring-2 ring-slate-950/60">
                   <CheckCircle2 className="w-6 h-6 text-white" />
                 </div>
               </div>
               <div className="text-center">
-                <p className="text-xl font-bold text-slate-800 mb-2">
+                <p className="text-xl font-semibold text-white mb-2">
                   {selectedFile.name}
                 </p>
-                <div className="flex items-center justify-center space-x-4 text-slate-600">
-                  <span className="px-3 py-1 bg-slate-100 rounded-full text-sm font-medium">
+                <div className="flex items-center justify-center space-x-3 text-slate-300">
+                  <span className="px-3 py-1 bg-white/5 rounded-full text-sm font-medium ring-1 ring-white/10">
                     {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
                   </span>
-                  <span className="px-3 py-1 bg-emerald-100 text-emerald-700 rounded-full text-sm font-medium">
+                  <span className="px-3 py-1 bg-emerald-500/15 text-emerald-200 rounded-full text-sm font-medium ring-1 ring-emerald-400/20">
                     Document
                   </span>
                 </div>
               </div>
               {!isProcessing && (
-                <p className="text-slate-600 font-medium">
-                  Click to select a different file or processing will begin automatically
+                <p className="text-slate-300 font-medium">
+                  Click to select a different file (processing starts automatically)
                 </p>
               )}
             </>
           ) : (
             <>
               <div className="relative">
-                <div className="p-6 bg-blue-600 rounded-xl shadow-sm">
+                <div className="p-6 rounded-2xl shadow-sm ring-1 ring-white/10 bg-gradient-to-br from-indigo-500 to-blue-500">
                   <CloudUpload className="w-16 h-16 text-white" />
                 </div>
-                <div className="absolute inset-0 bg-blue-500 rounded-xl animate-pulse opacity-10"></div>
+                <div className="absolute inset-0 rounded-2xl animate-pulse opacity-15 bg-gradient-to-br from-indigo-400 to-emerald-400"></div>
               </div>
               <div className="text-center">
-                <p className="text-2xl font-semibold text-slate-900 mb-2">
+                <p className="text-2xl font-semibold text-white mb-2">
                   Upload Rental Arrears File
                 </p>
-                <p className="text-base sm:text-lg text-slate-600 mb-4">
+                <p className="text-base sm:text-lg text-slate-300 mb-5">
                   Drag and drop your PDF, CSV, or Excel file here, or click to browse
                 </p>
-                <div className="inline-flex items-center space-x-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg shadow-sm transition-all duration-150">
+                <div className="inline-flex items-center space-x-2 px-6 py-3 rounded-xl text-white font-medium
+                  bg-white/10 hover:bg-white/15 ring-1 ring-white/15 hover:ring-white/25
+                  transition-all duration-200 active:scale-[0.98]
+                ">
                   <Upload className="w-5 h-5" />
                   <span>Choose File</span>
                 </div>
@@ -156,43 +165,43 @@ export default function FileUpload({ onFileSelect, isProcessing }: FileUploadPro
         </div>
 
         {isProcessing && (
-          <div className="absolute inset-0 flex items-center justify-center bg-white/90 backdrop-blur-sm rounded-3xl">
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80 backdrop-blur-md rounded-2xl">
             <div className="text-center">
               <div className="relative mb-4">
-                <div className="w-16 h-16 border-4 border-blue-200 rounded-full animate-spin border-t-blue-600 mx-auto"></div>
+                <div className="w-16 h-16 border-4 border-white/15 rounded-full animate-spin border-t-indigo-400 mx-auto"></div>
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <FileText className="w-6 h-6 text-blue-600" />
+                  <FileText className="w-6 h-6 text-indigo-200" />
                 </div>
               </div>
-              <p className="text-lg font-semibold text-slate-800 mb-2">Processing Your Document</p>
-              <p className="text-slate-600">AI is analyzing your rental arrears data...</p>
+              <p className="text-lg font-semibold text-white mb-2">Processing your file</p>
+              <p className="text-slate-300">Extracting ledger rows and calculating arrears…</p>
             </div>
           </div>
         )}
       </div>
 
-      <div className="mt-8 bg-amber-50 border border-amber-200 rounded-xl p-6">
+      <div className="mt-8 bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur">
         <div className="flex items-start space-x-3">
-          <div className="p-2 bg-amber-100 rounded-md">
-            <AlertCircle className="w-5 h-5 text-amber-600" />
+          <div className="p-2 bg-amber-500/15 rounded-md ring-1 ring-amber-400/20">
+            <AlertCircle className="w-5 h-5 text-amber-200" />
           </div>
           <div className="flex-1">
-            <h4 className="font-semibold text-amber-900 mb-2">Document Requirements</h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-amber-700">
+            <h4 className="font-semibold text-white mb-2">Document requirements</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-slate-300">
               <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-amber-400 rounded-full"></div>
-                <span>PDF format only (max 10MB)</span>
+                <div className="w-2 h-2 bg-amber-300/80 rounded-full"></div>
+                <span>PDF/CSV/Excel supported (max 10MB)</span>
               </div>
               <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-amber-400 rounded-full"></div>
-                <span>Text-based documents (not scanned images)</span>
+                <div className="w-2 h-2 bg-amber-300/80 rounded-full"></div>
+                <span>PDFs should be text-based (not scanned images)</span>
               </div>
               <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-amber-400 rounded-full"></div>
+                <div className="w-2 h-2 bg-amber-300/80 rounded-full"></div>
                 <span>Contains rental arrears information</span>
               </div>
               <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-amber-400 rounded-full"></div>
+                <div className="w-2 h-2 bg-amber-300/80 rounded-full"></div>
                 <span>Readable text with charge details</span>
               </div>
             </div>

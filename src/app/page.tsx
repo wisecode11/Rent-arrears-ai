@@ -92,21 +92,22 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-[radial-gradient(1200px_600px_at_20%_0%,rgba(99,102,241,0.18),transparent_60%),radial-gradient(900px_500px_at_80%_10%,rgba(16,185,129,0.14),transparent_55%),linear-gradient(to_bottom,rgba(2,6,23,0.9),rgba(2,6,23,1))]">
       {/* Header */}
-      <header className="bg-white shadow-sm border-b border-slate-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <header className="sticky top-0 z-10 border-b border-white/10 bg-slate-950/60 backdrop-blur-xl">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <div className="p-3 bg-blue-600 rounded-xl shadow-sm">
+              <div className="relative p-3 rounded-xl shadow-sm ring-1 ring-white/10 bg-gradient-to-br from-indigo-500/90 to-blue-500/90">
                 <Building2 className="w-8 h-8 text-white" />
+                <div className="pointer-events-none absolute -inset-1 rounded-xl bg-gradient-to-br from-indigo-500/20 to-emerald-500/10 blur-xl" />
               </div>
               <div>
-                <h1 className="text-3xl sm:text-4xl font-semibold text-slate-900">
+                <h1 className="text-3xl sm:text-4xl font-semibold text-white tracking-tight">
                   Rental Arrears Processor
                 </h1>
-                <p className="text-slate-600 mt-1 text-base sm:text-lg">
-                  Enterprise-grade AI-powered PDF processing for accurate rental arrears calculations
+                <p className="text-slate-300 mt-1 text-base sm:text-lg">
+                  Professional file processing for consistent, accurate rent arrears calculations
                 </p>
               </div>
             </div>
@@ -114,15 +115,15 @@ export default function Home() {
               {(processedData || error) && (
                 <button
                   onClick={handleRetry}
-                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md shadow-sm"
+                  className="px-3 py-1.5 rounded-md text-sm font-medium text-white bg-white/10 hover:bg-white/15 ring-1 ring-white/10 hover:ring-white/20 transition-all duration-200 active:scale-[0.98]"
                   aria-label="Upload another file"
                 >
                   New Upload
                 </button>
               )}
-              <div className="hidden lg:flex items-center space-x-2 px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">
-                <TrendingUp className="w-4 h-4 text-slate-700" />
-                <span className="text-xs font-medium text-slate-700">Professional Edition</span>
+              <div className="hidden lg:flex items-center space-x-2 px-3 py-1.5 rounded-full border border-white/10 bg-white/5">
+                <TrendingUp className="w-4 h-4 text-slate-200" />
+                <span className="text-xs font-medium text-slate-200">Professional Edition</span>
               </div>
             </div>
           </div>
@@ -130,14 +131,16 @@ export default function Home() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
         {/* Features Banner */}
         {!processedData && !error && (
           <div className="mb-8">
-            <div className="text-center mb-0">
-              <h2 className="text-2xl font-semibold text-slate-900 mb-2">Powerful Features</h2>
-              <p className="text-slate-600 max-w-2xl mx-auto">
-                Advanced AI technology combined with precise business logic to deliver accurate rental arrears processing
+            <div className="text-center">
+              <h2 className="text-2xl sm:text-3xl font-semibold text-white tracking-tight mb-2">
+                Fast, consistent arrears calculations
+              </h2>
+              <p className="text-slate-300 max-w-2xl mx-auto">
+                Upload a ledger file and get a clean breakdown of rent vs non‑rent charges with a single, reliable arrears number.
               </p>
             </div>
           </div>
