@@ -248,7 +248,24 @@ export function parseLedgerFromText(text: string): ParsedLedgerResult {
     if (amounts.length < 1) continue;
 
     // Heuristic: balance is usually the last monetary value (after removing control numbers).
-    const balance = amounts.length >= 2 ? amounts[amounts.length - 1] : amounts[0];
+    // But if we have 3+ amounts, it's likely: Charges, Payments, Balance (last one)
+    // If we have 2 amounts, it could be: Amount, Balance (last one) or Charges, Balance
+    // If we have 1 amount, it's likely just the balance
+    let balance = amounts.length >= 2 ? amounts[amounts.length - 1] : amounts[0];
+    
+    // Validate balance - should be reasonable (not a control number)
+    // Control numbers are usually 5-9 digit whole numbers without decimals
+    // Balances should have decimals or be reasonable amounts
+    if (amounts.length >= 2) {
+      // If the last number looks like a control number (no decimal, large), try the second-to-last
+      const lastAmount = amounts[amounts.length - 1];
+      if (!String(lastAmount).includes('.') && lastAmount > 1000 && lastAmount < 1000000) {
+        // Might be a control number, use second-to-last if available
+        if (amounts.length >= 3) {
+          balance = amounts[amounts.length - 2];
+        }
+      }
+    }
 
     // Determine debit/credit from remaining amounts.
     const nonBalance = amounts.length >= 2 ? amounts.slice(0, -1) : [];

@@ -426,8 +426,247 @@ function parseResidentLedgerFormat(extractedText: string): HuggingFaceResponse {
 /**
  * Direct text parser - 100% accurate extraction without AI dependency
  */
+/**
+ * Parse Tenant Ledger format: Date | Payer | Description | Charges | Payments | Balance
+ */
+function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
+  const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
+  
+  // Extract tenant name
+  let tenantName = 'Unknown Tenant';
+  for (const line of lines.slice(0, 30)) {
+    // Look for "Tenants:" or "Name:" field
+    const tenantMatch = line.match(/(?:Tenants?|Name):\s*(.+?)(?:\s+Phone|\s+Unit|$)/i);
+    if (tenantMatch) {
+      tenantName = tenantMatch[1].trim();
+      break;
+    }
+  }
+  
+  // Extract property address
+  let propertyName = 'Unknown Property';
+  for (const line of lines.slice(0, 30)) {
+    // Look for "Unit:" or "Property:" field
+    const unitMatch = line.match(/(?:Unit|Property):\s*(.+?)(?:\s+Status|\s+Move|\s+Lease|$)/i);
+    if (unitMatch) {
+      propertyName = unitMatch[1].trim();
+      break;
+    }
+  }
+  
+  const rentalCharges: any[] = [];
+  const nonRentalCharges: any[] = [];
+  const ledgerEntries: any[] = [];
+  let finalBalance = 0;
+  let openingBalance = 0;
+  
+  // Find the header line: Date | Payer | Description | Charges | Payments | Balance
+  let dataStartIndex = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toUpperCase();
+    if ((line.includes('DATE') && line.includes('DESCRIPTION') && line.includes('BALANCE')) ||
+        (line.includes('DATE') && line.includes('CHARGES') && line.includes('PAYMENTS'))) {
+      dataStartIndex = i + 1;
+      break;
+    }
+  }
+  
+  // Parse ledger entries
+  // Format: MM/DD/YYYY  [Payer]  Description  [Charges]  [Payments]  Balance
+  // Example: "06/01/2020    Residential Rent - June 2020    1,900.00        1,900.00"
+  const dateRegex = /(\d{2}\/\d{2}\/\d{4})/;
+  const moneyRegex = /([-]?\d{1,3}(?:,\d{3})*\.\d{2}|[-]?\d+\.\d{2})/g;
+  
+  for (let i = dataStartIndex; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Skip page numbers, headers, and footer lines
+    if (line.match(/^(Page|Created on|\d+\s*\/\s*\d+)/i)) continue;
+    if (line.toUpperCase().startsWith('TOTAL')) {
+      // Extract final balance from TOTAL line
+      const numbers = line.match(moneyRegex);
+      if (numbers && numbers.length > 0) {
+        const lastNumber = numbers[numbers.length - 1].replace(/,/g, '');
+        const parsed = parseFloat(lastNumber);
+        if (!isNaN(parsed)) {
+          finalBalance = Math.abs(parsed);
+          console.log('✅ Extracted final balance from TOTAL line:', finalBalance);
+        }
+      }
+      continue;
+    }
+    
+    const dateMatch = line.match(dateRegex);
+    if (!dateMatch) continue;
+    
+    const dateStr = dateMatch[1];
+    const [month, day, year] = dateStr.split('/');
+    const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    
+    // Extract all money amounts
+    const amounts = [...line.matchAll(moneyRegex)].map(m => {
+      const cleaned = m[1].replace(/,/g, '');
+      return parseFloat(cleaned);
+    }).filter(n => !isNaN(n));
+    
+    if (amounts.length === 0) continue;
+    
+    // In this format, the last number is always the balance
+    const balance = amounts[amounts.length - 1];
+    
+    // Extract description (between date and first money amount)
+    const afterDate = line.substring(line.indexOf(dateStr) + dateStr.length).trim();
+    
+    // Find the first money amount position
+    const firstAmountMatch = afterDate.match(moneyRegex);
+    let description = afterDate;
+    if (firstAmountMatch && firstAmountMatch.index !== undefined) {
+      description = afterDate.substring(0, firstAmountMatch.index).trim();
+    }
+    
+    // Description might have payer name at the start (remove if it's a name pattern)
+    // Pattern: "Sarah Thomas" or "Shekinah Voisin" followed by description
+    description = description.replace(/^([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+|$)/, '').trim();
+    
+    // Clean up description - remove extra spaces
+    description = description.replace(/\s+/g, ' ').trim();
+    
+    // Determine charges and payments
+    let debit = 0;
+    let credit = 0;
+    
+    // If we have 3 numbers: Charges, Payments, Balance
+    // If we have 2 numbers: either Charges+Balance or Payments+Balance
+    if (amounts.length >= 3) {
+      debit = Math.max(0, amounts[0]);
+      credit = Math.max(0, amounts[1]);
+    } else if (amounts.length === 2) {
+      // Need to determine if first is charge or payment based on description
+      const cls = classifyDescription(description);
+      if (cls.isPayment || description.toLowerCase().includes('payment') || description.toLowerCase().includes('ach')) {
+        credit = Math.abs(amounts[0]);
+      } else {
+        debit = Math.abs(amounts[0]);
+      }
+    }
+    
+    // Track opening balance (first entry)
+    if (openingBalance === 0 && Math.abs(balance) > 0) {
+      openingBalance = balance;
+    }
+    
+    // Update final balance (keep the latest)
+    if (Math.abs(balance) > 0) {
+      finalBalance = balance;
+    }
+    
+    const classified = classifyDescription(description);
+    const isRental = classified.isRentalCharge;
+    const isPayment = classified.isPayment || description.toLowerCase().includes('payment') || description.toLowerCase().includes('ach');
+    
+    // Add to ledger entries
+    ledgerEntries.push({
+      date,
+      description: description || 'Unknown',
+      debit: debit > 0 ? debit : 0,
+      credit: credit > 0 ? credit : 0,
+      balance,
+      isRental: isRental ? true : (classified.isNonRentalCharge ? false : undefined)
+    });
+    
+    // Add to rental charges
+    if (isRental && debit > 0 && !isPayment) {
+      rentalCharges.push({
+        description,
+        amount: debit,
+        date
+      });
+    }
+    
+    // Add to non-rental charges
+    // Include if: not rental, not payment, has debit, and is classified as non-rental OR has late fee keywords
+    const isLateFee = description.toLowerCase().includes('late fee') || description.toLowerCase().includes('late fees');
+    const isSecurityDeposit = description.toLowerCase().includes('security deposit');
+    const isNonRental = !isRental && !isPayment && debit > 0 && (
+      classified.isNonRentalCharge || 
+      isLateFee || 
+      isSecurityDeposit ||
+      description.toLowerCase().includes('fee') ||
+      description.toLowerCase().includes('deposit')
+    );
+    
+    if (isNonRental) {
+      let category = 'other';
+      if (isLateFee) category = 'late_fee';
+      else if (isSecurityDeposit) category = 'security_deposit';
+      else if (classified.category && classified.category !== 'rent') category = classified.category;
+      
+      nonRentalCharges.push({
+        description,
+        amount: debit,
+        date,
+        category
+      });
+    }
+  }
+  
+  // Sort by date
+  ledgerEntries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  rentalCharges.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  nonRentalCharges.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  
+  // Final balance should be from the LAST entry (most recent) after sorting
+  if (ledgerEntries.length > 0) {
+    const lastEntry = ledgerEntries[ledgerEntries.length - 1];
+    finalBalance = lastEntry.balance;
+    console.log('Final balance from last entry:', finalBalance, 'Date:', lastEntry.date);
+  }
+  
+  // If opening balance is 0, use first entry's balance
+  if (openingBalance === 0 && ledgerEntries.length > 0) {
+    openingBalance = ledgerEntries[0].balance;
+  }
+  
+  console.log('Tenant Ledger parsing complete:', {
+    tenantName,
+    propertyName,
+    finalBalance,
+    openingBalance,
+    rentalCharges: rentalCharges.length,
+    nonRentalCharges: nonRentalCharges.length,
+    ledgerEntries: ledgerEntries.length
+  });
+  
+  return {
+    tenantName,
+    propertyName,
+    period: ledgerEntries.length > 0 
+      ? `${ledgerEntries[0].date} to ${ledgerEntries[ledgerEntries.length - 1].date}`
+      : 'Extracted Period',
+    openingBalance: openingBalance || finalBalance || 0,
+    finalBalance: finalBalance || openingBalance || 0,
+    rentalCharges,
+    nonRentalCharges,
+    ledgerEntries
+  };
+}
+
 function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
   const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
+  
+  // Check if this is a "Tenant Ledger" format: Date | Payer | Description | Charges | Payments | Balance
+  const isTenantLedgerFormat = (extractedText.includes('Tenant Ledger') || 
+                                 extractedText.includes('Tenants:')) &&
+                                lines.some(line => {
+                                  const upper = line.toUpperCase();
+                                  return (upper.includes('DATE') && upper.includes('DESCRIPTION') && 
+                                         (upper.includes('CHARGES') || upper.includes('PAYMENTS') || upper.includes('BALANCE')));
+                                });
+  
+  if (isTenantLedgerFormat) {
+    console.log('📋 Detected Tenant Ledger format');
+    return parseTenantLedgerFormat(extractedText);
+  }
   
   // Check if this is a "Resident Ledger" format (different structure)
   const isResidentLedgerFormat = extractedText.includes('Resident Ledger') || 
@@ -435,6 +674,7 @@ function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
                                   lines.some(line => line.match(/^\d{2}\/\d{2}\/\d{4}\s+\w+\s+\w+\s+/));
   
   if (isResidentLedgerFormat) {
+    console.log('📋 Detected Resident Ledger format');
     return parseResidentLedgerFormat(extractedText);
   }
   
@@ -593,8 +833,9 @@ function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
         // Last number is ALWAYS the final balance (BALANCE DUE column)
         const lastNumber = numbers[numbers.length - 1].replace(/,/g, '');
         const parsed = parseFloat(lastNumber);
-        if (!isNaN(parsed) && parsed > 0) {
-          finalBalance = parsed;
+        // Accept any valid number (including negative balances and small amounts)
+        if (!isNaN(parsed)) {
+          finalBalance = Math.abs(parsed); // Use absolute value for balance
           console.log('✅ Extracted final balance from TOTAL line:', finalBalance, 'from line:', originalLine, 'all numbers:', numbers);
           break;
         }

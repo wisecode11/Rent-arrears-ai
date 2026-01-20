@@ -90,14 +90,37 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   // Example: If last zero was 04/06/2024, this only counts charges from 04/07/2024 onwards
   let totalNonRentalFromLastZero = 0;
   
-  if (typeof lastZeroOrNegativeIndex === 'number' && aiData.ledgerEntries) {
+  if (lastZeroOrNegativeBalanceDate) {
+    // Calculate from nonRentalCharges array (consistent with displayed list)
+    // Filter charges that are AFTER the last zero/negative balance date
+    const lastZeroDate = new Date(lastZeroOrNegativeBalanceDate);
+    
+    totalNonRentalFromLastZero = aiData.nonRentalCharges
+      .filter(charge => {
+        if (!charge.date) return false;
+        const chargeDate = new Date(charge.date);
+        // Include charges on the same day or after the last zero date
+        // Use > instead of >= to exclude the exact day of zero balance
+        return chargeDate > lastZeroDate;
+      })
+      .reduce((sum, charge) => sum + Math.abs(charge.amount), 0);
+    
+    console.log('📊 Non-rental charges calculation:', {
+      lastZeroDate: lastZeroOrNegativeBalanceDate,
+      totalNonRentalCharges: aiData.nonRentalCharges.length,
+      chargesAfterLastZero: aiData.nonRentalCharges.filter(c => {
+        if (!c.date) return false;
+        return new Date(c.date) > new Date(lastZeroOrNegativeBalanceDate);
+      }).length,
+      totalNonRentalFromLastZero
+    });
+  } else if (typeof lastZeroOrNegativeIndex === 'number' && aiData.ledgerEntries) {
+    // Fallback: If no last zero date but we have ledger entries, use ledger entries
     const sortedEntries = [...aiData.ledgerEntries].sort((a, b) =>
       new Date(a.date).getTime() - new Date(b.date).getTime()
     );
 
     // Count only entries AFTER the last <= 0 balance row.
-    // This loop starts from lastZeroOrNegativeIndex + 1, meaning it skips
-    // all entries before/at the last zero date and only counts later charges
     for (let i = lastZeroOrNegativeIndex + 1; i < sortedEntries.length; i++) {
       const entry = sortedEntries[i];
       const debit = entry.debit ?? 0;
@@ -113,7 +136,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       totalNonRentalFromLastZero += Math.abs(debit);
     }
   } else {
-    // Fallback: if no ledger entries, use all non-rental charges
+    // Fallback: if no ledger entries or last zero date, use all non-rental charges
     totalNonRentalFromLastZero = totalNonRental;
   }
   
