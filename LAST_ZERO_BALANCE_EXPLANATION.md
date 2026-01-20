@@ -217,3 +217,4 @@ console.log('Last Zero Balance:', lastZeroOrNegativeBalance);
 - Har entry mein `balance` field hai
 - At least ek entry mein `balance <= 0` hai
 
+

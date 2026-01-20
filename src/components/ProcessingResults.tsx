@@ -221,7 +221,7 @@ export default function ProcessingResults({
           )}
         </div>
 
-        {/* Non-Rental Charges - MOST IMPORTANT */}
+        {/* Non-Rental Charges - ALL */}
         <div className="bg-slate-950/35 rounded-2xl shadow-xl p-8 border border-white/10 ring-1 ring-white/10 backdrop-blur">
           <div className="flex items-center justify-between mb-6">
             <div>
@@ -288,6 +288,94 @@ export default function ProcessingResults({
           )}
         </div>
       </div>
+
+      {/* Non-Rental Charges from Last Zero/Negative Balance */}
+      {data.lastZeroOrNegativeBalanceDate && data.totalNonRentalFromLastZero !== undefined && data.totalNonRentalFromLastZero > 0 && (
+        <div className="bg-slate-950/35 rounded-2xl shadow-xl p-8 border border-white/10 ring-1 ring-white/10 backdrop-blur">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-xl sm:text-2xl font-semibold text-white tracking-tight">Non‑rental charges (from last zero/negative balance)</h3>
+              <p className="text-sm text-slate-400 mt-2">
+                Charges after <span className="text-slate-200 font-medium">{new Date(data.lastZeroOrNegativeBalanceDate).toLocaleDateString()}</span>
+              </p>
+            </div>
+            <div className="px-3 py-1.5 bg-orange-500/15 rounded-full border border-orange-400/20">
+              <span className="text-xs font-medium text-orange-200">
+                {(() => {
+                  // Filter charges after last zero date
+                  const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
+                  const filteredCharges = data.nonRentalCharges.filter(charge => {
+                    if (!charge.date) return false;
+                    return new Date(charge.date) > lastZeroDate;
+                  });
+                  return `${filteredCharges.length} items`;
+                })()}
+              </span>
+            </div>
+          </div>
+          
+          {(() => {
+            // Filter charges after last zero date
+            const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
+            const filteredCharges = data.nonRentalCharges.filter(charge => {
+              if (!charge.date) return false;
+              return new Date(charge.date) > lastZeroDate;
+            });
+
+            return filteredCharges.length > 0 ? (
+              <div className="space-y-4">
+                {filteredCharges.map((charge, index) => (
+                  <div
+                    key={index}
+                    className="group p-4 bg-white/5 hover:bg-white/7 rounded-xl border border-white/10 hover:border-white/20 transition-all duration-200"
+                  >
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <p className="font-medium text-white transition-colors">
+                          {charge.description}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-2 text-sm text-slate-300">
+                          {charge.date && (
+                            <div className="flex items-center space-x-1">
+                              <Calendar className="w-4 h-4 text-slate-400" />
+                              <span className="text-slate-300">{charge.date}</span>
+                            </div>
+                          )}
+                          {charge.category && (
+                            <span className="px-2 py-0.5 bg-white/5 text-slate-200 rounded-full text-xs font-medium ring-1 ring-white/10">
+                              {charge.category}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="ml-4">
+                        <span className="text-lg font-semibold text-slate-100">
+                          {formatCurrency(charge.amount)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <div className="border-t border-white/10 pt-4 mt-6">
+                  <div className="flex justify-between items-center p-4 bg-orange-500/10 rounded-xl border border-orange-400/20">
+                    <span className="text-lg font-semibold text-white">Total from last zero/negative balance</span>
+                    <span className="text-xl sm:text-2xl font-semibold text-orange-200">
+                      {formatCurrency(data.totalNonRentalFromLastZero)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-12">
+                <div className="p-4 bg-white/5 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center ring-1 ring-white/10">
+                  <AlertTriangle className="w-8 h-8 text-slate-400" />
+                </div>
+                <p className="text-slate-300 italic text-lg">No charges found after last zero/negative balance date</p>
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
       {/* Extracted Text Preview */}
       {extractedText && (
