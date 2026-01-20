@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { ProcessedData } from '@/types';
-import { Download, Eye, EyeOff, AlertTriangle, CheckCircle, TrendingUp, DollarSign, FileSpreadsheet, Calendar } from 'lucide-react';
+import { Download, Eye, EyeOff, AlertTriangle, CheckCircle, TrendingUp, DollarSign, FileSpreadsheet, Calendar, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface ProcessingResultsProps {
   data: ProcessedData;
@@ -18,6 +18,9 @@ export default function ProcessingResults({
   isGeneratingExcel 
 }: ProcessingResultsProps) {
   const [showExtractedText, setShowExtractedText] = useState(false);
+  const [showRentalCharges, setShowRentalCharges] = useState(false);
+  const [showNonRentalCharges, setShowNonRentalCharges] = useState(false);
+  const [showNonRentalFromLastZero, setShowNonRentalFromLastZero] = useState(false);
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -178,13 +181,38 @@ export default function ProcessingResults({
         <div className="bg-slate-950/35 rounded-2xl shadow-xl p-8 border border-white/10 ring-1 ring-white/10 backdrop-blur">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-xl sm:text-2xl font-semibold text-white tracking-tight">Rental charges</h3>
-            <div className="px-3 py-1.5 bg-white/5 rounded-full border border-white/10">
-              <span className="text-xs font-medium text-slate-200">{data.rentalCharges.length} items</span>
+            <div className="flex items-center gap-3">
+              <div className="px-3 py-1.5 bg-white/5 rounded-full border border-white/10">
+                <span className="text-xs font-medium text-slate-200">{data.rentalCharges.length} items</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRentalCharges((v) => !v)}
+                className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-full border border-white/10 hover:border-white/20 transition-all duration-200 active:scale-[0.98]"
+                aria-expanded={showRentalCharges}
+                aria-controls="rental-charges-list"
+              >
+                <span className="text-xs font-medium text-slate-100">
+                  {showRentalCharges ? 'Collapse' : 'Expand'}
+                </span>
+                {showRentalCharges ? (
+                  <ChevronUp className="w-4 h-4 text-slate-200" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-slate-200" />
+                )}
+              </button>
             </div>
           </div>
           
-          {data.rentalCharges.length > 0 ? (
-            <div className="space-y-4">
+          {data.rentalCharges.length === 0 ? (
+            <div className="text-center py-12">
+              <div className="p-4 bg-white/5 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center ring-1 ring-white/10">
+                <DollarSign className="w-8 h-8 text-slate-400" />
+              </div>
+              <p className="text-slate-300 italic text-lg">No rental charges found</p>
+            </div>
+          ) : showRentalCharges ? (
+            <div id="rental-charges-list" className="space-y-4">
               {data.rentalCharges.map((charge, index) => (
                 <div
                   key={index}
@@ -212,11 +240,8 @@ export default function ProcessingResults({
               ))}
             </div>
           ) : (
-            <div className="text-center py-12">
-              <div className="p-4 bg-white/5 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center ring-1 ring-white/10">
-                <DollarSign className="w-8 h-8 text-slate-400" />
-              </div>
-              <p className="text-slate-300 italic text-lg">No rental charges found</p>
+            <div className="text-center py-10">
+              <p className="text-slate-300 italic"> <span className="text-slate-100 font-medium">Expand</span> to view.</p>
             </div>
           )}
         </div>
@@ -230,13 +255,38 @@ export default function ProcessingResults({
                 Most important
               </span>
             </div>
-            <div className="px-3 py-1.5 bg-white/5 rounded-full border border-white/10">
-              <span className="text-xs font-medium text-slate-200">{data.nonRentalCharges.length} items</span>
+            <div className="flex items-center gap-3">
+              <div className="px-3 py-1.5 bg-white/5 rounded-full border border-white/10">
+                <span className="text-xs font-medium text-slate-200">{data.nonRentalCharges.length} items</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowNonRentalCharges((v) => !v)}
+                className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-full border border-white/10 hover:border-white/20 transition-all duration-200 active:scale-[0.98]"
+                aria-expanded={showNonRentalCharges}
+                aria-controls="nonrental-charges-list"
+              >
+                <span className="text-xs font-medium text-slate-100">
+                  {showNonRentalCharges ? 'Collapse' : 'Expand'}
+                </span>
+                {showNonRentalCharges ? (
+                  <ChevronUp className="w-4 h-4 text-slate-200" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-slate-200" />
+                )}
+              </button>
             </div>
           </div>
           
-          {data.nonRentalCharges.length > 0 ? (
-            <div className="space-y-4">
+          {data.nonRentalCharges.length === 0 ? (
+            <div className="text-center py-12">
+              <div className="p-4 bg-white/5 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center ring-1 ring-white/10">
+                <DollarSign className="w-8 h-8 text-slate-400" />
+              </div>
+              <p className="text-slate-300 italic text-lg">No non‑rental charges found</p>
+            </div>
+          ) : showNonRentalCharges ? (
+            <div id="nonrental-charges-list" className="space-y-4">
               {data.nonRentalCharges.map((charge, index) => (
                 <div
                   key={index}
@@ -279,11 +329,8 @@ export default function ProcessingResults({
               </div>
             </div>
           ) : (
-            <div className="text-center py-12">
-              <div className="p-4 bg-white/5 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center ring-1 ring-white/10">
-                <DollarSign className="w-8 h-8 text-slate-400" />
-              </div>
-              <p className="text-slate-300 italic text-lg">No non‑rental charges found</p>
+            <div className="text-center py-10">
+              <p className="text-slate-300 italic"> <span className="text-slate-100 font-medium">Expand</span> to view.</p>
             </div>
           )}
         </div>
@@ -299,18 +346,36 @@ export default function ProcessingResults({
                 Charges after <span className="text-slate-200 font-medium">{new Date(data.lastZeroOrNegativeBalanceDate).toLocaleDateString()}</span>
               </p>
             </div>
-            <div className="px-3 py-1.5 bg-orange-500/15 rounded-full border border-orange-400/20">
-              <span className="text-xs font-medium text-orange-200">
-                {(() => {
-                  // Filter charges after last zero date
-                  const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
-                  const filteredCharges = data.nonRentalCharges.filter(charge => {
-                    if (!charge.date) return false;
-                    return new Date(charge.date) > lastZeroDate;
-                  });
-                  return `${filteredCharges.length} items`;
-                })()}
-              </span>
+            <div className="flex items-center gap-3">
+              <div className="px-3 py-1.5 bg-orange-500/15 rounded-full border border-orange-400/20">
+                <span className="text-xs font-medium text-orange-200">
+                  {(() => {
+                    // Filter charges after last zero date
+                    const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
+                    const filteredCharges = data.nonRentalCharges.filter(charge => {
+                      if (!charge.date) return false;
+                      return new Date(charge.date) > lastZeroDate;
+                    });
+                    return `${filteredCharges.length} items`;
+                  })()}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowNonRentalFromLastZero((v) => !v)}
+                className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-full border border-white/10 hover:border-white/20 transition-all duration-200 active:scale-[0.98]"
+                aria-expanded={showNonRentalFromLastZero}
+                aria-controls="nonrental-from-lastzero-list"
+              >
+                <span className="text-xs font-medium text-slate-100">
+                  {showNonRentalFromLastZero ? 'Collapse' : 'Expand'}
+                </span>
+                {showNonRentalFromLastZero ? (
+                  <ChevronUp className="w-4 h-4 text-slate-200" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-slate-200" />
+                )}
+              </button>
             </div>
           </div>
           
@@ -322,8 +387,27 @@ export default function ProcessingResults({
               return new Date(charge.date) > lastZeroDate;
             });
 
-            return filteredCharges.length > 0 ? (
-              <div className="space-y-4">
+            if (filteredCharges.length === 0) {
+              return (
+                <div className="text-center py-12">
+                  <div className="p-4 bg-white/5 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center ring-1 ring-white/10">
+                    <AlertTriangle className="w-8 h-8 text-slate-400" />
+                  </div>
+                  <p className="text-slate-300 italic text-lg">No charges found after last zero/negative balance date</p>
+                </div>
+              );
+            }
+
+            if (!showNonRentalFromLastZero) {
+              return (
+                <div className="text-center py-10">
+                  <p className="text-slate-300 italic"> <span className="text-slate-100 font-medium">Expand</span> to view.</p>
+                </div>
+              );
+            }
+
+            return (
+              <div id="nonrental-from-lastzero-list" className="space-y-4">
                 {filteredCharges.map((charge, index) => (
                   <div
                     key={index}
@@ -364,13 +448,6 @@ export default function ProcessingResults({
                     </span>
                   </div>
                 </div>
-              </div>
-            ) : (
-              <div className="text-center py-12">
-                <div className="p-4 bg-white/5 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center ring-1 ring-white/10">
-                  <AlertTriangle className="w-8 h-8 text-slate-400" />
-                </div>
-                <p className="text-slate-300 italic text-lg">No charges found after last zero/negative balance date</p>
               </div>
             );
           })()}

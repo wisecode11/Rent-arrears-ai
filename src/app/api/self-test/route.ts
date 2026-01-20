@@ -27,6 +27,21 @@ export async function GET() {
 2026-01-03 Legal Fees 100.00 0.00 1600.00
       `.trim(),
     },
+    {
+      name: 'Format C (statement w/ charge codes + wrapped amount/balance)',
+      asOfDate: '2026-01-19',
+      text: `
+DATE DESCRIPTION AMOUNT AMOUNT BALANCE
+07/01/2015  1 BASE RENT : 1525.00
+1525.00
+07/01/2015 25 AIR CONDITIONER : 10.00 1535.00
+07/23/2015 PAYMENT CH#:159 1525.00 10.00
+08/01/2015  1 BASE RENT : 1525.00
+1535.00
+08/06/2015 59 LATE CHARGE : 25.00 1570.00
+TOTAL  234345.71  228609.66    5736.05
+      `.trim(),
+    },
   ];
 
   const results = fixtures.map((f) => {
@@ -49,6 +64,9 @@ export async function GET() {
       name: f.name,
       asOfDate: f.asOfDate,
       ledgerEntries: parsed.ledgerEntries.length,
+      rentalCharges: rentalCharges.length,
+      nonRentalCharges: nonRentalCharges.length,
+      sampleRental: rentalCharges.slice(0, 3),
       latestBalance: processed.latestBalance,
       lastZeroOrNegativeBalanceDate: processed.lastZeroOrNegativeBalanceDate,
       totalNonRentalFromLastZero: processed.totalNonRentalFromLastZero,

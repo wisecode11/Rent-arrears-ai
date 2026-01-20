@@ -204,8 +204,11 @@ export function parseFlexibleDate(raw: string): string | null {
 const DATE_TOKEN_REGEX =
   /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4})/;
 
+// Money tokens in ledgers almost always have cents. We intentionally require a
+// decimal part to avoid accidentally treating charge codes (e.g. "1", "25")
+// and control/check numbers as monetary values.
 const MONEY_TOKEN_REGEX =
-  /(\(?-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?|\(?-?\$?\d+(?:\.\d{2})?\)?)/g;
+  /(\(?-?\$?(?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2}\)?)/g;
 
 export interface ParsedLedgerResult {
   ledgerEntries: LedgerEntry[];
@@ -218,10 +221,49 @@ function stripTrailingMoneyTokens(line: string): string {
 }
 
 export function parseLedgerFromText(text: string): ParsedLedgerResult {
-  const lines = text
+  const rawLines = text
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
+
+  // PDF text extraction sometimes wraps a single ledger row across multiple lines,
+  // especially when the right-most "balance" column is far away. We coalesce
+  // "date line + trailing amount line" into one logical line before parsing.
+  const lines: string[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    let line = rawLines[i];
+
+    const upper = line.toUpperCase();
+    // Skip obvious separator-only lines early.
+    if (/^[-=_]{5,}$/.test(line)) continue;
+
+    const hasDateToken = Boolean(line.match(DATE_TOKEN_REGEX)?.[1]);
+    if (hasDateToken) {
+      let moneyCount = [...line.matchAll(MONEY_TOKEN_REGEX)].length;
+
+      // If we don't yet have enough monetary tokens to confidently parse a row,
+      // append subsequent non-date lines that contain money tokens.
+      while (i + 1 < rawLines.length) {
+        const next = rawLines[i + 1];
+        const nextUpper = next.toUpperCase();
+        const nextHasDate = Boolean(next.match(DATE_TOKEN_REGEX)?.[1]);
+        if (nextHasDate) break;
+        if (nextUpper.startsWith('TOTAL')) break;
+        if (/^[-=_]{5,}$/.test(next)) break;
+
+        const nextMoneyCount = [...next.matchAll(MONEY_TOKEN_REGEX)].length;
+        if (moneyCount >= 2) break;
+        if (nextMoneyCount < 1) break;
+
+        line = `${line} ${next}`;
+        moneyCount += nextMoneyCount;
+        i++;
+      }
+    }
+
+    // Keep the original line if no coalescing happened.
+    lines.push(line);
+  }
 
   const rejectedLines: string[] = [];
   const entries: Array<LedgerEntry & { _idx: number }> = [];

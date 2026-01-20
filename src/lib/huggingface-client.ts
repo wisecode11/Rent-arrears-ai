@@ -669,13 +669,19 @@ function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
   }
   
   // Check if this is a "Resident Ledger" format (different structure)
-  const isResidentLedgerFormat = extractedText.includes('Resident Ledger') || 
-                                  extractedText.includes('Chg Code') ||
-                                  lines.some(line => line.match(/^\d{2}\/\d{2}\/\d{4}\s+\w+\s+\w+\s+/));
+  // IMPORTANT: Many statement-style PDFs (like Fort Hamilton) have charge codes
+  // after the date (e.g., "07/01/2015 1 BASE RENT ...") but are NOT "Resident Ledger"
+  // tables. Only treat as Resident Ledger when the document explicitly indicates it.
+  const isResidentLedgerFormat = extractedText.includes('Resident Ledger') || extractedText.includes('Chg Code');
   
   if (isResidentLedgerFormat) {
     console.log('📋 Detected Resident Ledger format');
-    return parseResidentLedgerFormat(extractedText);
+    const resident = parseResidentLedgerFormat(extractedText);
+    // If resident parsing fails, fall back to the generic parser below.
+    if ((resident.ledgerEntries?.length ?? 0) >= 5) {
+      return resident;
+    }
+    console.log('⚠️ Resident Ledger parsing returned no/low entries; using generic parser fallback');
   }
   
   // Extract tenant name - look for "TO:" field
@@ -857,7 +863,7 @@ function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
   for (const line of lines) {
     const upperLine = line.toUpperCase();
     if (upperLine.includes('YEAR STARTING BALANCE')) {
-      const balanceMatch = line.match(/(\d{1,3}(?:,\d{3})*\.\d{2})/);
+      const balanceMatch = line.match(/((?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2})/);
       if (balanceMatch) {
         openingBalance = parseFloat(balanceMatch[1].replace(/,/g, ''));
         break;
@@ -869,7 +875,7 @@ function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
   if (openingBalance === 0) {
     for (const line of lines) {
       // Look for first date pattern with balance
-      const firstEntryMatch = line.match(/(\d{2}\/\d{2}\/\d{4}).*?(\d{1,3}(?:,\d{3})*\.\d{2})\s*$/);
+      const firstEntryMatch = line.match(/(\d{2}\/\d{2}\/\d{4}).*?((?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2})\s*$/);
       if (firstEntryMatch) {
         openingBalance = parseFloat(firstEntryMatch[2].replace(/,/g, ''));
         break;
@@ -1024,7 +1030,8 @@ export async function analyzeWithAI(extractedText: string): Promise<HuggingFaceR
       try {
         console.log(`Trying model: ${model}`);
         
-        const response = await fetch(`https://api-inference.huggingface.co/models/${model}`, {
+        // Hugging Face deprecated api-inference.huggingface.co; use router endpoint instead.
+        const response = await fetch(`https://router.huggingface.co/models/${model}`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -1146,6 +1153,11 @@ export async function analyzeWithAI(extractedText: string): Promise<HuggingFaceR
  */
 function createFallbackResponse(extractedText: string): HuggingFaceResponse {
   const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
+
+  // Amounts in ledgers can be 2+ digits without commas (e.g., 1525.00, 1886.61)
+  // or comma-formatted (e.g., 1,525.00). Use a single shared fragment to avoid
+  // accidentally excluding common 4+ digit amounts.
+  const AMOUNT_WITH_CENTS = '(?:\\d{1,3}(?:,\\d{3})*|\\d+)\\.\\d{2}';
   
   // Extract tenant name
   let tenantName = 'Unknown Tenant';
@@ -1198,7 +1210,10 @@ function createFallbackResponse(extractedText: string): HuggingFaceResponse {
   
   // Extract rental charges (BASE RENT entries)
   const rentalCharges: any[] = [];
-  const rentalRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+BASE\s+RENT\s*:\s*(\d{1,3}(?:,\d{3})*\.\d{2})/i;
+  const rentalRegex = new RegExp(
+    `(\\d{2}\\/\\d{2}\\/\\d{4})\\s+\\d+\\s+BASE\\s+RENT\\s*:\\s*(${AMOUNT_WITH_CENTS})`,
+    'i'
+  );
   
   for (const line of lines) {
     const match = line.match(rentalRegex);
@@ -1220,7 +1235,10 @@ function createFallbackResponse(extractedText: string): HuggingFaceResponse {
   const nonRentalCharges: any[] = [];
   
   // Pattern for AIR CONDITIONER
-  const acRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+AIR\s+CONDITIONER\s*:\s*(\d{1,3}(?:,\d{3})*\.\d{2})/i;
+  const acRegex = new RegExp(
+    `(\\d{2}\\/\\d{2}\\/\\d{4})\\s+\\d+\\s+AIR\\s+CONDITIONER\\s*:\\s*(${AMOUNT_WITH_CENTS})`,
+    'i'
+  );
   for (const line of lines) {
     const match = line.match(acRegex);
     if (match) {
@@ -1239,7 +1257,10 @@ function createFallbackResponse(extractedText: string): HuggingFaceResponse {
   }
   
   // Pattern for LATE CHARGE
-  const lateRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+LATE\s+(?:CHARGE|FEE)\s*:.*?(\d{1,3}(?:,\d{3})*\.\d{2})/i;
+  const lateRegex = new RegExp(
+    `(\\d{2}\\/\\d{2}\\/\\d{4})\\s+\\d+\\s+LATE\\s+(?:CHARGE|FEE)\\s*:.*?(${AMOUNT_WITH_CENTS})`,
+    'i'
+  );
   for (const line of lines) {
     const match = line.match(lateRegex);
     if (match) {
@@ -1258,7 +1279,10 @@ function createFallbackResponse(extractedText: string): HuggingFaceResponse {
   }
   
   // Pattern for LEGAL FEES
-  const legalRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+LEGAL\s+FEES\s*:.*?(\d{1,3}(?:,\d{3})*\.\d{2})/i;
+  const legalRegex = new RegExp(
+    `(\\d{2}\\/\\d{2}\\/\\d{4})\\s+\\d+\\s+LEGAL\\s+FEES\\s*:.*?(${AMOUNT_WITH_CENTS})`,
+    'i'
+  );
   for (const line of lines) {
     const match = line.match(legalRegex);
     if (match) {
@@ -1277,7 +1301,10 @@ function createFallbackResponse(extractedText: string): HuggingFaceResponse {
   }
   
   // Pattern for BAD CHECK CHARGE
-  const badCheckRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+BAD\s+CHECK\s+CHARGE\s*:.*?(\d{1,3}(?:,\d{3})*\.\d{2})/i;
+  const badCheckRegex = new RegExp(
+    `(\\d{2}\\/\\d{2}\\/\\d{4})\\s+\\d+\\s+BAD\\s+CHECK\\s+CHARGE\\s*:.*?(${AMOUNT_WITH_CENTS})`,
+    'i'
+  );
   for (const line of lines) {
     const match = line.match(badCheckRegex);
     if (match) {
@@ -1296,7 +1323,10 @@ function createFallbackResponse(extractedText: string): HuggingFaceResponse {
   }
   
   // Pattern for SECURITY DEPOSIT
-  const securityRegex = /(\d{2}\/\d{2}\/\d{4})\s+\d+\s+SECURITY\s+DEPOSIT\s*:\s*(\d{1,3}(?:,\d{3})*\.\d{2})/i;
+  const securityRegex = new RegExp(
+    `(\\d{2}\\/\\d{2}\\/\\d{4})\\s+\\d+\\s+SECURITY\\s+DEPOSIT\\s*:\\s*(${AMOUNT_WITH_CENTS})`,
+    'i'
+  );
   for (const line of lines) {
     const match = line.match(securityRegex);
     if (match) {
