@@ -127,7 +127,7 @@ PDF TEXT TO ANALYZE:
  * Parse Resident Ledger format (different structure)
  * Format: Date | Chg Code | Description | Charge | Payment | Balance | Chg/Rec
  */
-function parseResidentLedgerFormat(extractedText: string): HuggingFaceResponse {
+export function parseResidentLedgerFormat(extractedText: string): HuggingFaceResponse {
   const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
   
   // Extract tenant name
@@ -175,211 +175,257 @@ function parseResidentLedgerFormat(extractedText: string): HuggingFaceResponse {
   }
   
   // Parse each ledger entry
-  // Format: MM/DD/YYYY  code  description  charge  payment  balance  control#
-  // Payment can be empty, balance must have decimal point
-  // Pattern: date code description charge [payment] balance [control#]
-  const ledgerEntryRegex = /(\d{2}\/\d{2}\/\d{4})\s+(\w+)\s+(.+?)\s+([-\d,\.()]+)\s+([-\d,\.()]*)\s+([-\d,\.()]+\.\d{2})(?:\s+\d+)?$/i;
-  
-  // Alternative: when payment is missing, balance comes right after charge
-  const altLedgerRegex = /(\d{2}\/\d{2}\/\d{4})\s+(\w+)\s+(.+?)\s+([-\d,\.()]+)\s+([-\d,\.()]+\.\d{2})(?:\s+\d+)?$/i;
-  
+  // Format: Date | Chg Code | Description | Charge | Payment | Balance | Chg/Rec
+  //
+  // Resident ledgers frequently wrap entries (especially utilities) across multiple lines
+  // and those wrapped lines may include non-column "noise" decimals (meter readings, tax, etc.).
+  // To avoid mis-parsing those noise decimals as charge/payment, we only parse the trailing
+  // 2-3 money tokens at the END of each logical entry:
+  //   [charge] [payment] [balance] [optional control#]
+  // or:
+  //   [amount] [balance] [optional control#]
+  const DATE_PREFIX_REGEX = /^(\d{1,2}\/\d{1,2}\/\d{4})\s+/;
+  const moneyToken = String.raw`\(?-?\$?(?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2}\)?`;
+  const moneyTokenRegex = new RegExp(moneyToken, 'gi');
+
   // Track seen entries to prevent duplicates
   const seenEntries = new Set<string>();
-  
+
+  const parseAmount = (str: string): number => {
+    if (!str) return 0;
+    const cleaned = str.replace(/,/g, '').trim();
+    if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
+      return -Math.abs(parseFloat(cleaned.replace(/[()]/g, '')));
+    }
+    const parsed = parseFloat(cleaned.replace(/^\$/, ''));
+    return isNaN(parsed) ? 0 : parsed;
+  };
+
+  const stripTrailingColumns = (s: string): string => {
+    let out = (s || '').trim();
+    // Remove trailing control numbers (5+ digits).
+    out = out.replace(/\s+\d{5,}\s*$/g, '').trim();
+    // Remove up to 3 trailing money tokens (charge/payment/balance).
+    for (let k = 0; k < 3; k++) {
+      out = out.replace(new RegExp(`\\s*${moneyToken}\\s*$`, 'i'), '').trim();
+      out = out.replace(/\s+\d{5,}\s*$/g, '').trim();
+    }
+    return out.trim();
+  };
+
+  // Coalesce wrapped ledger rows into logical blocks (keep newlines so we can
+  // reliably use the LAST physical line for the charge/payment/balance columns).
+  const coalescedLines: string[] = [];
   for (let i = dataStartIndex; i < lines.length; i++) {
-    const line = lines[i];
-    
+    const raw = lines[i].trim();
+
     // Skip page numbers and headers
-    if (line.match(/^\d+\s*\/\s*\d+/) || line.includes('Resident Ledger') || line.includes('Date:')) {
+    // Skip page markers like "1 / 8" (but do NOT match ledger dates like "11/22/2023").
+    if (raw.match(/^\d+\s*\/\s*\d+\s*$/) || raw.includes('Resident Ledger') || raw.includes('Date:')) {
       continue;
     }
-    
-    // Try primary regex first (with payment field)
-    let match = line.match(ledgerEntryRegex);
-    let hasPayment = true;
-    
-    // If no match, try alternative (without payment field)
-    if (!match) {
-      match = line.match(altLedgerRegex);
-      hasPayment = false;
+
+    if (!DATE_PREFIX_REGEX.test(raw)) continue;
+
+    let buffer = raw;
+    // Keep appending until we hit the next date-row. Do NOT stop early based on decimals,
+    // because utilities include meter readings/tax amounts that can look like money.
+    // The real ledger columns (charge/payment/balance) appear at the very end of the entry.
+    let wrapLines = 0;
+    while (i + 1 < lines.length) {
+      const next = lines[i + 1].trim();
+      if (!next) {
+        i++;
+        continue;
+      }
+      if (DATE_PREFIX_REGEX.test(next)) break;
+      if (next.match(/^\d+\s*\/\s*\d+\s*$/)) break; // page "1 / 8"
+      if (next.toUpperCase().includes('RESIDENT LEDGER')) break;
+      if (next.toUpperCase().startsWith('TOTAL')) break;
+
+      buffer = `${buffer}\n${next}`;
+      i++;
+      wrapLines++;
+      if (wrapLines >= 30) break; // safety cap
     }
-    
-    if (match) {
-      const dateStr = match[1];
-      const [month, day, year] = dateStr.split('/');
-      const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-      const chgCode = match[2].toLowerCase();
-      let description = match[3].trim();
-      
-      // Clean description - remove control numbers and Ctrl# references
-      // Control numbers are usually 6-9 digit numbers in descriptions
-      description = description
-        .replace(/\s+Ctrl#\s*\d+/gi, '') // Remove "Ctrl# 173461"
-        .replace(/\s+Ctrl\s*\d+/gi, '') // Remove "Ctrl 173461"
-        .replace(/\b\d{6,9}\b/g, '') // Remove 6-9 digit numbers (likely control numbers)
-        .replace(/\s+\d{5,}$/, '') // Remove trailing 5+ digit numbers (control numbers)
-        .replace(/\s{2,}/g, ' ') // Clean up multiple spaces
-        .trim();
-      
-      // Parse amounts - handle negative values in parentheses like (25.00)
-      const chargeStr = match[4] ? match[4].trim() : '';
-      const paymentStr = hasPayment && match[5] ? match[5].trim() : '';
-      const balanceStr = hasPayment ? (match[6] ? match[6].trim() : '') : (match[5] ? match[5].trim() : '');
-      
-      // Parse amounts - remove commas and handle negative values in parentheses
-      const parseAmount = (str: string): number => {
-        if (!str) return 0;
-        // Remove commas and parentheses, handle negative
-        const cleaned = str.replace(/,/g, '').trim();
-        if (cleaned.includes('(')) {
-          return -Math.abs(parseFloat(cleaned.replace(/[()]/g, '')));
-        }
-        const parsed = parseFloat(cleaned);
-        return isNaN(parsed) ? 0 : parsed;
-      };
-      
-      let charge = parseAmount(chargeStr);
-      const payment = parseAmount(paymentStr);
-      let balance = parseAmount(balanceStr);
-      
-      // Detect if charge field is actually a control number
-      // Control numbers are usually 5-9 digit whole numbers without decimals
-      // Charges should have decimals or be reasonable amounts (under $100k)
-      const isChargeControlNumber = chargeStr && 
-                                    !chargeStr.includes('.') && 
-                                    !chargeStr.includes(',') &&
-                                    chargeStr.length >= 5 && 
-                                    charge >= 10000 && 
-                                    charge < 1000000;
-      
-      // For specific entry types, charge is usually 0
-      const isNSFReceipt = description.toLowerCase().includes('nsf receipt');
-      const isReversal = description.toLowerCase().includes('reversed') || 
-                        description.toLowerCase().includes('reverse') ||
-                        description.toLowerCase().includes('reversed by charge');
-      const isPaymentEntry = chgCode === 'chk' && (isNSFReceipt || description.toLowerCase().includes('clickpay'));
-      
-      // If charge looks like a control number OR it's a payment/reversal entry, set charge to 0
-      if (isChargeControlNumber || isPaymentEntry || isReversal) {
+    coalescedLines.push(buffer);
+  }
+
+  for (const line of coalescedLines) {
+    const blockLines = line
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (blockLines.length === 0) continue;
+
+    const headerLine = blockLines[0];
+    const tailLine = blockLines[blockLines.length - 1];
+
+    const startMatch = headerLine.match(/^(\d{1,2}\/\d{1,2}\/\d{4})\s+(\S+)\s*(.*)$/);
+    if (!startMatch) continue;
+
+    const dateStr = startMatch[1];
+    const [month, day, year] = dateStr.split('/');
+    const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+
+    // Normalize charge code to match existing logic (e.g. "chk#" => "chk")
+    const rawCode = startMatch[2];
+    const chgCode = rawCode.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const headerRemainder = (startMatch[3] || '').trim();
+
+    // Extract trailing amounts from the LAST physical line of the block.
+    // This avoids accidentally treating meter readings/tax/usage decimals as the ledger columns.
+    // NOTE: moneyTokenRegex is global; reset lastIndex per iteration to avoid skipping matches.
+    moneyTokenRegex.lastIndex = 0;
+    const tailTokens = [...tailLine.matchAll(moneyTokenRegex)].map((m) => m[0]);
+    if (tailTokens.length < 2) continue;
+
+    let charge = 0;
+    let payment = 0;
+    let balance = 0;
+
+    if (tailTokens.length >= 3) {
+      // Last three are: charge, payment, balance (resident ledger table columns)
+      charge = parseAmount(tailTokens[tailTokens.length - 3]);
+      payment = parseAmount(tailTokens[tailTokens.length - 2]);
+      balance = parseAmount(tailTokens[tailTokens.length - 1]);
+    } else {
+      // Two tokens: [amount] [balance]
+      const amt = parseAmount(tailTokens[0]);
+      balance = parseAmount(tailTokens[1]);
+      const looksLikePayment =
+        chgCode === 'chk' ||
+        amt < 0 ||
+        headerLine.toLowerCase().includes('clickpay') ||
+        headerLine.toLowerCase().includes('ach') ||
+        headerLine.toLowerCase().includes('payment') ||
+        headerLine.toLowerCase().includes('chk#');
+      if (looksLikePayment) {
+        payment = Math.abs(amt);
         charge = 0;
+      } else {
+        charge = Math.abs(amt);
+        payment = 0;
       }
-      
-      // Store isReversal for later use
-      const entryIsReversal = isReversal;
-      
-      // Final validation - charges should be under $100,000
-      const MAX_REASONABLE_CHARGE = 100000; // $100k max for a single charge
-      if (charge > MAX_REASONABLE_CHARGE) {
-        // This is definitely a control number or error, set charge to 0
-        charge = 0;
-      }
-      
-      // Validate balance - must have decimal point (like 3,506.13), not a whole number (control#)
-      // If balance doesn't have decimal, it might be the control number - try to find balance before it
-      if (balanceStr && !balanceStr.includes('.') && balance > 1000) {
-        // This is likely a control number, not a balance - try to find balance before it
-        // Look for a number with decimal point before the control number
-        const balanceMatch = line.match(/(\d{1,3}(?:,\d{3})*\.\d{2})\s+\d+$/);
-        if (balanceMatch) {
-          balance = parseAmount(balanceMatch[1]);
-        } else {
-          console.warn('Skipping entry - balance appears to be control number:', { date, chgCode, balanceStr });
-          continue;
-        }
-      }
-      
-      // Validate balance - should be reasonable
-      const MAX_REASONABLE_BALANCE = 1000000; // $1 million max for balance
-      if (Math.abs(balance) > MAX_REASONABLE_BALANCE) {
-        console.warn('Skipping entry with unreasonable balance:', { date, chgCode, description, balance });
-        continue;
-      }
-      
-      // Create unique key to prevent duplicates
-      const entryKey = `${date}_${chgCode}_${description.substring(0, 50)}_${charge}_${balance}`;
-      
-      // Skip if already seen
-      if (seenEntries.has(entryKey)) {
-        continue;
-      }
-      seenEntries.add(entryKey);
-      
-      // Track opening balance (first valid entry with positive balance)
-      if (openingBalance === 0 && Math.abs(balance) > 0 && balance >= 0) {
-        openingBalance = balance;
-      }
-      
-      // Final balance is the last entry's balance (keep updating)
-      if (Math.abs(balance) > 0) {
-        finalBalance = balance;
-      }
-      
-      const classified = classifyDescription(description);
-      
-      // Determine if rental or non-rental based on charge code + description fallback
-      const isRental = chgCode === 'affrent' || chgCode === 'rent' || classified.isRentalCharge;
-      
-      // Payments should NEVER be counted as charges
-      const isPayment = chgCode === 'chk' || 
-                       description.toLowerCase().includes('clickpay') ||
-                       description.toLowerCase().includes('payment') ||
-                       description.toLowerCase().includes('chk#') ||
-                       description.toLowerCase().includes('ach') ||
-                       (payment > 0 && charge === 0); // If there's payment but no charge, it's a payment entry
-      
-      // Credits and reversals should NOT be counted as charges
-      const isCredit = description.toLowerCase().includes('credit') ||
-                      description.toLowerCase().includes('reversed') ||
-                      description.toLowerCase().includes('reverse') ||
-                      charge < 0; // Negative charges are credits
-      
-      // Non-rental charges: only actual charges, not payments or credits
-      const isNonRental = !isRental && !isPayment && !isCredit && (
-        classified.isNonRentalCharge ||
-        chgCode === 'latefee' || 
-        chgCode === 'secdep' || 
-        chgCode === 'nsf' || 
-        chgCode === 'keyinc' || 
-        chgCode === 'uao' ||
-        (charge > 0 && charge < 100000) // Reasonable charge amount
-      );
-      
-      // Add to ledger entries
-      ledgerEntries.push({
-        date: date,
-        description: description,
-        debit: charge > 0 ? charge : 0,
-        credit: payment > 0 ? payment : 0,
-        balance: balance,
-        isRental: isRental ? true : isNonRental ? false : undefined
+    }
+
+    // Build description from header remainder + any middle lines (exclude tail line).
+    const middleLines = blockLines.slice(1, -1);
+    let description =
+      blockLines.length === 1
+        ? stripTrailingColumns(headerRemainder)
+        : `${headerRemainder} ${middleLines.join(' ')}`.replace(/\s+/g, ' ').trim();
+
+    // Clean description - remove control numbers and Ctrl# references
+    description = description
+      .replace(/\s+Ctrl#\s*\d+/gi, '')
+      .replace(/\s+Ctrl\s*\d+/gi, '')
+      .replace(/\b\d{6,9}\b/g, '')
+      .replace(/\s+\d{5,}$/, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    const isReversal =
+      description.toLowerCase().includes('reversed') ||
+      description.toLowerCase().includes('reverse') ||
+      description.toLowerCase().includes('reversed by charge');
+
+    // Reversals should never be counted as charges.
+    if (isReversal) charge = 0;
+
+    // Final validation - charges should be under $100,000
+    const MAX_REASONABLE_CHARGE = 100000;
+    if (charge > MAX_REASONABLE_CHARGE) charge = 0;
+
+    // Validate balance - should be reasonable
+    const MAX_REASONABLE_BALANCE = 1000000;
+    if (Math.abs(balance) > MAX_REASONABLE_BALANCE) {
+      console.warn('Skipping entry with unreasonable balance:', { date, chgCode, description, balance });
+      continue;
+    }
+
+    const entryKey = `${date}_${chgCode}_${description.substring(0, 50)}_${charge}_${balance}`;
+    if (seenEntries.has(entryKey)) continue;
+    seenEntries.add(entryKey);
+
+    // Track opening balance (first parsed entry) - corrected after sorting if still 0
+    if (openingBalance === 0 && ledgerEntries.length === 0) {
+      openingBalance = balance;
+    }
+
+    // Keep updating final balance as we parse
+    finalBalance = balance;
+
+    const debit = charge > 0 ? charge : 0;
+    const credit = payment !== 0 ? Math.abs(payment) : 0;
+
+    const classified = classifyDescription(description);
+
+    // Determine if rental or non-rental based on charge code + description fallback
+    const isRental = chgCode === 'affrent' || chgCode === 'rent' || classified.isRentalCharge;
+
+    // Payments should NEVER be counted as charges
+    const isPayment =
+      chgCode === 'chk' ||
+      description.toLowerCase().includes('clickpay') ||
+      description.toLowerCase().includes('payment') ||
+      description.toLowerCase().includes('chk#') ||
+      description.toLowerCase().includes('ach') ||
+      (credit > 0 && debit === 0);
+
+    // Credits should NOT be counted as charges
+    const isCredit =
+      description.toLowerCase().includes('credit') ||
+      description.toLowerCase().includes('reversed') ||
+      description.toLowerCase().includes('reverse') ||
+      charge < 0;
+
+    // Non-rental charges: only actual charges, not payments or credits
+    const isNonRental = !isRental && !isPayment && !isCredit && (
+      classified.isNonRentalCharge ||
+      chgCode === 'latefee' ||
+      chgCode === 'secdep' ||
+      chgCode === 'nsf' ||
+      chgCode === 'keyinc' ||
+      chgCode === 'uao' ||
+      chgCode === 'utilele' ||
+      (debit > 0 && debit < 100000)
+    );
+
+    ledgerEntries.push({
+      date: date,
+      description: description || 'Unknown',
+      debit,
+      credit,
+      balance: balance,
+      isRental: isRental ? true : isNonRental ? false : undefined
+    });
+
+    if (isRental && debit > 0 && !isCredit && !isReversal) {
+      rentalCharges.push({
+        description: description || 'Unknown',
+        amount: debit,
+        date: date
       });
-      
-      // Add to rental charges (only if positive charge, not credits/reversals)
-      if (isRental && charge > 0 && !isCredit && !entryIsReversal) {
-        rentalCharges.push({
-          description: description,
-          amount: charge,
-          date: date
-        });
-      }
-      
-      // Add to non-rental charges (ONLY if it's a charge, not a payment/reversal)
-      if (isNonRental && charge > 0 && !isPayment && !entryIsReversal) {
-        let category = 'other';
-        if (chgCode === 'latefee') category = 'late_fee';
-        else if (chgCode === 'secdep') category = 'security_deposit';
-        else if (chgCode === 'nsf') category = 'bad_check';
-        else if (chgCode === 'keyinc') category = 'lockout';
-        else if (chgCode === 'uao') category = 'use_of_occupancy';
-        else if (classified.category && classified.category !== 'rent') category = classified.category;
-        
-        nonRentalCharges.push({
-          description: description,
-          amount: charge,
-          date: date,
-          category: category
-        });
-      }
+    }
+
+    if (isNonRental && debit > 0 && !isPayment && !isReversal) {
+      let category = 'other';
+      if (chgCode === 'latefee') category = 'late_fee';
+      else if (chgCode === 'secdep') category = 'security_deposit';
+      else if (chgCode === 'nsf') category = 'bad_check';
+      else if (chgCode === 'keyinc') category = 'lockout';
+      else if (chgCode === 'uao') category = 'use_of_occupancy';
+      else if (chgCode === 'utilele') category = 'utilities';
+      else if (classified.category && classified.category !== 'rent') category = classified.category;
+
+      nonRentalCharges.push({
+        description: description || 'Unknown',
+        amount: debit,
+        date: date,
+        category: category
+      });
     }
   }
   

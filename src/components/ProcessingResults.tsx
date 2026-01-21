@@ -106,7 +106,7 @@ export default function ProcessingResults({
               </p>
               {data.lastZeroOrNegativeBalanceDate && (
                 <p className="text-xs text-slate-400 mt-3">
-                  Last zero/negative balance: <span className="text-slate-200">{new Date(data.lastZeroOrNegativeBalanceDate).toLocaleDateString()}</span>
+                  Last zero/negative balance: <span className="text-slate-200">{new Date(data.lastZeroOrNegativeBalanceDate).toLocaleDateString('en-US')}</span>
                 </p>
               )}
               {!data.lastZeroOrNegativeBalanceDate && (
@@ -343,7 +343,7 @@ export default function ProcessingResults({
             <div>
               <h3 className="text-xl sm:text-2xl font-semibold text-white tracking-tight">Non‑rental charges (from last zero/negative balance)</h3>
               <p className="text-sm text-slate-400 mt-2">
-                Charges after <span className="text-slate-200 font-medium">{new Date(data.lastZeroOrNegativeBalanceDate).toLocaleDateString()}</span>
+                Charges after <span className="text-slate-200 font-medium">{new Date(data.lastZeroOrNegativeBalanceDate).toLocaleDateString('en-US')}</span>
               </p>
             </div>
             <div className="flex items-center gap-3">
