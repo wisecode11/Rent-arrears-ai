@@ -112,16 +112,17 @@ function normalizeText(input: string): string {
 export function classifyDescription(description: string): ClassifiedDescription {
   const d = normalizeText(description);
 
-  const isPayment = PAYMENT_KEYWORDS.some((k) => d.includes(k));
-  if (isPayment) {
-    return { isPayment: true, isRentalCharge: false, isNonRentalCharge: false };
-  }
-
   // Explicit non-rent keywords win.
   for (const { keyword, category } of NON_RENT_KEYWORDS) {
     if (d.includes(keyword)) {
       return { isPayment: false, isRentalCharge: false, isNonRentalCharge: true, category };
     }
+  }
+
+  // Payment keywords after explicit non-rent overrides.
+  const isPayment = PAYMENT_KEYWORDS.some((k) => d.includes(k));
+  if (isPayment) {
+    return { isPayment: true, isRentalCharge: false, isNonRentalCharge: false };
   }
 
   const hasRent = RENT_KEYWORDS.some((k) => d.includes(k));

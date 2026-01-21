@@ -354,7 +354,7 @@ export default function ProcessingResults({
                     const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
                     const filteredCharges = data.nonRentalCharges.filter(charge => {
                       if (!charge.date) return false;
-                      return new Date(charge.date) > lastZeroDate;
+                      return new Date(charge.date) >= lastZeroDate;
                     });
                     return `${filteredCharges.length} items`;
                   })()}
@@ -384,7 +384,7 @@ export default function ProcessingResults({
             const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
             const filteredCharges = data.nonRentalCharges.filter(charge => {
               if (!charge.date) return false;
-              return new Date(charge.date) > lastZeroDate;
+              return new Date(charge.date) >= lastZeroDate;
             });
 
             if (filteredCharges.length === 0) {

@@ -90,31 +90,9 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   // Example: If last zero was 04/06/2024, this only counts charges from 04/07/2024 onwards
   let totalNonRentalFromLastZero = 0;
   
-  if (lastZeroOrNegativeBalanceDate) {
-    // Calculate from nonRentalCharges array (consistent with displayed list)
-    // Filter charges that are AFTER the last zero/negative balance date
-    const lastZeroDate = new Date(lastZeroOrNegativeBalanceDate);
-    
-    totalNonRentalFromLastZero = aiData.nonRentalCharges
-      .filter(charge => {
-        if (!charge.date) return false;
-        const chargeDate = new Date(charge.date);
-        // Include charges on the same day or after the last zero date
-        // Use > instead of >= to exclude the exact day of zero balance
-        return chargeDate > lastZeroDate;
-      })
-      .reduce((sum, charge) => sum + Math.abs(charge.amount), 0);
-    
-    console.log('📊 Non-rental charges calculation:', {
-      lastZeroDate: lastZeroOrNegativeBalanceDate,
-      totalNonRentalCharges: aiData.nonRentalCharges.length,
-      chargesAfterLastZero: aiData.nonRentalCharges.filter(c => {
-        if (!c.date) return false;
-        return new Date(c.date) > new Date(lastZeroOrNegativeBalanceDate);
-      }).length,
-      totalNonRentalFromLastZero
-    });
-  } else if (typeof lastZeroOrNegativeIndex === 'number' && aiData.ledgerEntries) {
+  // Preferred: If we have ledger entries + the last zero index, compute from the ledger order.
+  // This matches the rule wording "from that point onward" even when multiple entries share the same date.
+  if (typeof lastZeroOrNegativeIndex === 'number' && aiData.ledgerEntries && aiData.ledgerEntries.length > 0) {
     // Fallback: If no last zero date but we have ledger entries, use ledger entries
     const sortedEntries = [...aiData.ledgerEntries].sort((a, b) =>
       new Date(a.date).getTime() - new Date(b.date).getTime()
@@ -128,13 +106,39 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
 
       // Payments/credits should not be counted here.
       const cls = classifyDescription(entry.description);
-      if (cls.isPayment) continue;
+      const isPaymentLike =
+        cls.isPayment || (entry.credit ?? 0) > 0 || entry.description.toLowerCase().includes('payment');
+      if (isPaymentLike) continue;
 
       // Only exclude clear rent charges; everything else counts toward non-rent.
-      if (cls.isRentalCharge) continue;
+      const isRentLike = entry.isRental === true || cls.isRentalCharge;
+      if (isRentLike) continue;
 
       totalNonRentalFromLastZero += Math.abs(debit);
     }
+
+    console.log('📊 Non-rental charges calculation (ledger-based):', {
+      lastZeroDate: lastZeroOrNegativeBalanceDate,
+      ledgerEntries: sortedEntries.length,
+      totalNonRentalFromLastZero,
+    });
+  } else if (lastZeroOrNegativeBalanceDate) {
+    // Backup: Use nonRentalCharges list by date (inclusive of the last-zero date).
+    // Note: date-only filtering can't distinguish same-day ordering, but is better than excluding the entire day.
+    const lastZeroDate = new Date(lastZeroOrNegativeBalanceDate);
+    totalNonRentalFromLastZero = aiData.nonRentalCharges
+      .filter((charge) => {
+        if (!charge.date) return false;
+        const chargeDate = new Date(charge.date);
+        return chargeDate >= lastZeroDate;
+      })
+      .reduce((sum, charge) => sum + Math.abs(charge.amount), 0);
+
+    console.log('📊 Non-rental charges calculation (date-based):', {
+      lastZeroDate: lastZeroOrNegativeBalanceDate,
+      totalNonRentalCharges: aiData.nonRentalCharges.length,
+      totalNonRentalFromLastZero,
+    });
   } else {
     // Fallback: if no ledger entries or last zero date, use all non-rental charges
     totalNonRentalFromLastZero = totalNonRental;
