@@ -4,7 +4,7 @@ import { calculateFinalAmount } from '@/lib/business-logic';
 import type { HuggingFaceResponse } from '@/types';
 
 export async function GET() {
-  const fixtures: Array<{ name: string; asOfDate: string; text: string }> = [
+  const fixtures: Array<{ name: string; asOfDate: string; text: string; issueDateISO?: string }> = [
     {
       name: 'Format A (simple 2-amount rows)',
       asOfDate: '2026-01-03', // 1st-5th => previous month balance
@@ -42,11 +42,44 @@ DATE DESCRIPTION AMOUNT AMOUNT BALANCE
 TOTAL  234345.71  228609.66    5736.05
       `.trim(),
     },
+    {
+      name: 'Issue Date cutoff (ignore future month entries)',
+      asOfDate: '2026-01-03', // system date (should be ignored because issue date is present)
+      issueDateISO: '2025-06-02',
+      text: `
+Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
+05/31/2025  latefee  Late Fee (05/2025)  50.00  0.00  100.00  1
+06/01/2025  resid  Residential Rent (06/2025)  500.00  0.00  200.00  2
+07/01/2025  resid  Residential Rent (07/2025)  500.00  0.00  300.00  3
+      `.trim(),
+    },
+    {
+      name: 'Issue Date + rent-only current month => step back',
+      asOfDate: '2026-01-19',
+      issueDateISO: '2025-08-14',
+      text: `
+Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
+08/01/2025  latefee  Late Fee (07/2025)  50.00  0.00  900.00  1
+09/01/2025  resid  Residential Rent (09/2025)  1000.00  0.00  1500.00  2
+      `.trim(),
+    },
+    {
+      name: 'Issue Date + non-rent in current month => use it',
+      asOfDate: '2026-01-19',
+      issueDateISO: '2025-08-14',
+      text: `
+Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
+08/01/2025  latefee  Late Fee (07/2025)  50.00  0.00  900.00  1
+09/01/2025  resid  Residential Rent (09/2025)  1000.00  0.00  1500.00  2
+09/01/2025  latefee  Late Fee (08/2025)  50.00  0.00  1550.00  3
+      `.trim(),
+    },
   ];
 
   const results = fixtures.map((f) => {
     const parsed = parseLedgerFromText(f.text);
     const { rentalCharges, nonRentalCharges } = chargesFromLedgerEntries(parsed.ledgerEntries);
+    const issueDate = f.issueDateISO;
 
     const aiData: HuggingFaceResponse = {
       tenantName: 'Test Tenant',
@@ -57,6 +90,7 @@ TOTAL  234345.71  228609.66    5736.05
       rentalCharges,
       nonRentalCharges,
       ledgerEntries: parsed.ledgerEntries,
+      issueDate,
     };
 
     const processed = calculateFinalAmount(aiData, new Date(f.asOfDate));
@@ -71,6 +105,11 @@ TOTAL  234345.71  228609.66    5736.05
       lastZeroOrNegativeBalanceDate: processed.lastZeroOrNegativeBalanceDate,
       totalNonRentalFromLastZero: processed.totalNonRentalFromLastZero,
       rentArrears: processed.rentArrears,
+      calculationTrace: processed.calculationTrace,
+      debugLedgerTail:
+        f.name.startsWith('Issue Date')
+          ? parsed.ledgerEntries.slice(-5)
+          : undefined,
     };
   });
 

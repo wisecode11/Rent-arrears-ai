@@ -31,7 +31,9 @@ export interface CalculationTraceNonRentItem {
 }
 
 export interface CalculationTrace {
-  asOfDateISO: string;
+  asOfDateISO: string; // effective as-of date used for Step 3 (issue date when available; otherwise system date)
+  systemAsOfDateISO?: string; // the actual runtime date passed in (usually "today")
+  issueDateISO?: string; // extracted from ledger header when available
   step1: {
     lastZeroOrNegative?: {
       date: string;
@@ -82,6 +84,7 @@ export interface ProcessedData {
   rentArrears: number;
   extractedText?: string;
   calculationTrace?: CalculationTrace;
+  issueDate?: string; // YYYY-MM-DD, extracted from ledger header when available
 }
 
 export interface APIResponse {
@@ -100,4 +103,5 @@ export interface HuggingFaceResponse {
   rentalCharges: RentalCharge[];
   nonRentalCharges: NonRentalCharge[];
   ledgerEntries?: LedgerEntry[];
+  issueDate?: string; // YYYY-MM-DD, extracted from ledger header when available
 }

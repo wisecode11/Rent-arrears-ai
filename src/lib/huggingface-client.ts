@@ -1,6 +1,16 @@
 import { HuggingFaceResponse } from '@/types';
 import { chargesFromLedgerEntries, classifyDescription, parseLedgerFromText } from '@/lib/ledger-parser';
 
+function extractIssueDateISO(extractedText: string): string | undefined {
+  // Common header: "Date: 04/25/2025"
+  const m = extractedText.match(/\bDate:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i);
+  if (!m) return undefined;
+  const mm = m[1].padStart(2, '0');
+  const dd = m[2].padStart(2, '0');
+  const yyyy = m[3];
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 /**
  * Precise prompt for AI extraction - critical for accuracy
  */
@@ -129,6 +139,7 @@ PDF TEXT TO ANALYZE:
  */
 export function parseResidentLedgerFormat(extractedText: string): HuggingFaceResponse {
   const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
+  const issueDate = extractIssueDateISO(extractedText);
   
   // Extract tenant name
   let tenantName = 'Unknown Tenant';
@@ -465,7 +476,8 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     finalBalance: finalBalance || openingBalance || 0,
     rentalCharges,
     nonRentalCharges,
-    ledgerEntries
+    ledgerEntries,
+    issueDate,
   };
 }
 
@@ -994,6 +1006,7 @@ function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
  * Send extracted text to Hugging Face for intelligent parsing using direct API calls
  */
 export async function analyzeWithAI(extractedText: string): Promise<HuggingFaceResponse> {
+  const issueDate = extractIssueDateISO(extractedText);
   // FIRST: Try direct parsing for 100% accuracy
   console.log('Attempting direct text parsing for 100% accuracy...');
   try {
@@ -1018,6 +1031,7 @@ export async function analyzeWithAI(extractedText: string): Promise<HuggingFaceR
     // We can improve tenant name extraction later, but use what we have
     if (hasFinalBalance || hasCharges || hasLedgerEntries) {
       console.log('✅ Using direct parsing results - 100% accurate!');
+      directResult.issueDate = directResult.issueDate ?? issueDate;
       
       // If finalBalance is 0 but we have ledger entries, extract from last entry
       if (!hasFinalBalance && hasLedgerEntries && directResult.ledgerEntries) {
@@ -1171,6 +1185,7 @@ export async function analyzeWithAI(extractedText: string): Promise<HuggingFaceR
               console.warn('AI extracted only', parsedData.nonRentalCharges.length, 'non-rental charges. This might be incomplete.');
             }
             
+            parsedData.issueDate = parsedData.issueDate ?? issueDate;
             return parsedData;
           } catch (parseError) {
             console.error('JSON parse error:', parseError);

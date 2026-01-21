@@ -498,9 +498,23 @@ export default function ProcessingResults({
             <div>
               <h3 className="text-xl sm:text-2xl font-semibold text-white tracking-tight">Calculation flow (4 steps)</h3>
               <p className="text-sm text-slate-400 mt-1">
-                Easy breakdown of where calculation started and which rules were applied (as-of:{' '}
-                <span className="text-slate-200 font-medium">{data.calculationTrace.asOfDateISO}</span>)
+                Easy breakdown of where calculation started and which rules were applied.
               </p>
+              <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                <span className="px-2.5 py-1 bg-white/5 text-slate-200 rounded-full ring-1 ring-white/10">
+                  Used as-of: <span className="font-semibold">{data.calculationTrace.asOfDateISO}</span>
+                </span>
+                {data.calculationTrace.issueDateISO && (
+                  <span className="px-2.5 py-1 bg-white/5 text-slate-200 rounded-full ring-1 ring-white/10">
+                    Issue date (from ledger): <span className="font-semibold">{data.calculationTrace.issueDateISO}</span>
+                  </span>
+                )}
+                {data.calculationTrace.systemAsOfDateISO && (
+                  <span className="px-2.5 py-1 bg-white/5 text-slate-200 rounded-full ring-1 ring-white/10">
+                    System date: <span className="font-semibold">{data.calculationTrace.systemAsOfDateISO}</span>
+                  </span>
+                )}
+              </div>
             </div>
             <button
               type="button"

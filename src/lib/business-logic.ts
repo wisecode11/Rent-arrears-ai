@@ -52,7 +52,8 @@ function pickLatestBalanceByDateRule(
 
 function pickLatestBalanceEntryByDateRule(
   ledgerEntries: LedgerEntry[],
-  asOfDate: Date
+  asOfDate: Date,
+  options?: { forceCurrentMonth?: boolean }
 ): { rule: CalculationTrace['step3']['rule']; targetMonthISO: string; selected?: LedgerEntry; note?: string } {
   if (!ledgerEntries.length) {
     const monthISO = `${asOfDate.getFullYear()}-${String(asOfDate.getMonth() + 1).padStart(2, '0')}`;
@@ -67,46 +68,100 @@ function pickLatestBalanceEntryByDateRule(
   const day = asOfDate.getDate();
   const month = asOfDate.getMonth();
   const year = asOfDate.getFullYear();
-  const usePrevMonth = day >= 1 && day <= 5;
+  // Client rule (strict):
+  // - day 1-5 => use previous month
+  // - day 6+ => use current month
+  // Any "future-dated" ledger entries should be filtered BEFORE calling this function
+  // (using Issue Date cutoff when available).
+  // IMPORTANT: Many ledgers have multiple rows on the same date. We must pick the *last*
+  // non-rent balance within the chosen month, not an earlier same-day item.
+  // We use the original array order as a tie-breaker (later index = later row).
+  const rowIndex = new Map<LedgerEntry, number>();
+  for (let i = 0; i < ledgerEntries.length; i++) rowIndex.set(ledgerEntries[i], i);
 
-  const targetMonth = usePrevMonth ? (month === 0 ? 11 : month - 1) : month;
-  const targetYear = usePrevMonth && month === 0 ? year - 1 : year;
+  const sortedNewest = [...ledgerEntries].sort((a, b) => {
+    const da = new Date(a.date).getTime();
+    const db = new Date(b.date).getTime();
+    if (da !== db) return db - da; // newest date first
+    const ia = rowIndex.get(a) ?? 0;
+    const ib = rowIndex.get(b) ?? 0;
+    return ib - ia; // later row first
+  });
+
+  const usePrevMonth = !options?.forceCurrentMonth && day >= 1 && day <= 5;
+  const initialTargetMonth = usePrevMonth ? (month === 0 ? 11 : month - 1) : month;
+  const initialTargetYear = usePrevMonth && month === 0 ? year - 1 : year;
+
+  const isRentEntry = (entry: LedgerEntry): boolean => {
+    if (entry.isRental === true) return true;
+    const cls = classifyDescription(entry.description ?? '');
+    return cls.isRentalCharge === true;
+  };
+
+  // Client requirement: If the "current/target month" latest balance row is a RENT charge,
+  // skip that month (go previous) and use the latest NON-RENT balance row instead.
+  // If there is a non-rent row in the month (late fee/nsf/utilities/payment/etc), we can use it.
+  const findLatestNonRentInMonth = (yy: number, mm0: number): LedgerEntry | undefined => {
+    // sortedNewest already orders by (date desc, row order desc), so first match is the latest row.
+    return sortedNewest.find((entry) => {
+      const d = new Date(entry.date);
+      return d.getFullYear() === yy && d.getMonth() === mm0 && !isRentEntry(entry);
+    });
+  };
+
+  // Try the target month first; if it has only rent rows, step back month-by-month (max 24 months).
+  let targetMonth = initialTargetMonth;
+  let targetYear = initialTargetYear;
+  let selected: LedgerEntry | undefined;
+  let skippedRentOnlyMonths = 0;
+
+  for (let guard = 0; guard < 24; guard++) {
+    selected = findLatestNonRentInMonth(targetYear, targetMonth);
+    if (selected) break;
+
+    // If there are entries in this month but all are rent, record and step back.
+    const monthHasAny = sortedNewest.some((e) => {
+      const d = new Date(e.date);
+      return d.getFullYear() === targetYear && d.getMonth() === targetMonth;
+    });
+    if (monthHasAny) skippedRentOnlyMonths++;
+
+    // Step back one month.
+    targetMonth -= 1;
+    if (targetMonth < 0) {
+      targetMonth = 11;
+      targetYear -= 1;
+    }
+  }
+
   const targetMonthISO = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
 
-  const sortedNewest = [...ledgerEntries].sort(
-    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-  );
-
-  const inTarget = sortedNewest.find((entry) => {
-    const d = new Date(entry.date);
-    return d.getMonth() === targetMonth && d.getFullYear() === targetYear;
-  });
-  if (inTarget) {
+  if (selected) {
     return {
       rule: usePrevMonth ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+',
       targetMonthISO,
-      selected: inTarget,
+      selected,
+      note: skippedRentOnlyMonths > 0
+        ? `Skipped ${skippedRentOnlyMonths} month(s) because their latest balances were rent-only; used latest non-rent balance instead.`
+        : undefined,
     };
   }
 
   if (usePrevMonth) {
-    const beforeCurrentMonth = sortedNewest.find((entry) => {
-      const d = new Date(entry.date);
-      return d.getFullYear() < year || (d.getFullYear() === year && d.getMonth() < month);
-    });
+    const beforeCurrentMonth = sortedNewest.find((entry) => !isRentEntry(entry));
     return {
       rule: 'prev-month-if-day-1-5',
       targetMonthISO,
       selected: beforeCurrentMonth ?? sortedNewest[0],
-      note: 'No entry found in target month; used latest entry before current month.',
+      note: 'No non-rent balance found in target/previous months; used the most recent known balance.',
     };
   }
 
   return {
     rule: 'current-month-if-day-6+',
     targetMonthISO,
-    selected: sortedNewest[0],
-    note: 'No entry found in target month; used most recent known balance.',
+    selected: sortedNewest.find((entry) => !isRentEntry(entry)) ?? sortedNewest[0],
+    note: 'No non-rent balance found in target months; used the most recent known balance.',
   };
 }
 
@@ -124,6 +179,33 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     aiData.ledgerEntries && aiData.ledgerEntries.length > 0
       ? [...aiData.ledgerEntries].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
       : undefined;
+
+  // Effective as-of date for Step 3:
+  // - Prefer ledger "issueDate" if present.
+  // - Otherwise use runtime date (asOfDate param, typically today).
+  const systemAsOfDateISO = asOfDate.toISOString().split('T')[0];
+  const issueDateISO = aiData.issueDate;
+  const issueDateObj = issueDateISO ? new Date(issueDateISO) : undefined;
+  // Effective as-of date for Step 3:
+  // - Prefer Issue Date when available
+  // - BUT if the ledger contains entries after Issue Date (statement issued earlier),
+  //   we anchor the month-selection to the newest ledger date (so we don’t incorrectly jump to a prior month).
+  const issueDateValid = issueDateObj && !Number.isNaN(issueDateObj.getTime());
+  const newestLedgerDateObj =
+    sortedLedgerEntries && sortedLedgerEntries.length > 0
+      ? new Date(sortedLedgerEntries[sortedLedgerEntries.length - 1].date)
+      : undefined;
+  const newestLedgerValid = newestLedgerDateObj && !Number.isNaN(newestLedgerDateObj.getTime());
+
+  const ledgerAfterIssue =
+    issueDateValid && newestLedgerValid && newestLedgerDateObj!.getTime() > issueDateObj!.getTime();
+
+  const effectiveAsOfDate =
+    ledgerAfterIssue
+      ? newestLedgerDateObj!
+      : issueDateValid
+        ? issueDateObj!
+        : asOfDate;
   
   // Step 1: Find the last zero or negative balance
   // This finds the most recent date when balance was $0.00 or negative
@@ -212,8 +294,8 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   // Prefer ledgerEntries for this since they contain dated running balances.
   let latestBalance = 0;
   let step3Rule: CalculationTrace['step3']['rule'] =
-    asOfDate.getDate() >= 1 && asOfDate.getDate() <= 5 ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+';
-  let step3TargetMonthISO = `${asOfDate.getFullYear()}-${String(asOfDate.getMonth() + 1).padStart(2, '0')}`;
+    effectiveAsOfDate.getDate() >= 1 && effectiveAsOfDate.getDate() <= 5 ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+';
+  let step3TargetMonthISO = `${effectiveAsOfDate.getFullYear()}-${String(effectiveAsOfDate.getMonth() + 1).padStart(2, '0')}`;
   let step3SelectedEntry: CalculationTrace['step3']['selectedEntry'] | undefined;
   let step3Note: string | undefined;
   
@@ -224,10 +306,22 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   });
   
   if (sortedLedgerEntries && sortedLedgerEntries.length > 0) {
-    const picked = pickLatestBalanceEntryByDateRule(sortedLedgerEntries, asOfDate);
+    // If ledger extends beyond issue date, treat newest ledger month as the "current month"
+    // (do NOT apply 1-5 previous-month rule to the newest-ledger-date).
+    const picked = pickLatestBalanceEntryByDateRule(
+      sortedLedgerEntries,
+      effectiveAsOfDate,
+      { forceCurrentMonth: ledgerAfterIssue }
+    );
     step3Rule = picked.rule;
     step3TargetMonthISO = picked.targetMonthISO;
-    step3Note = picked.note;
+    const noteParts: string[] = [];
+    if (ledgerAfterIssue) {
+      noteParts.push(`Ledger has entries after Issue Date (${issueDateISO}); anchored month rule to newest ledger date (${sortedLedgerEntries[sortedLedgerEntries.length - 1].date}).`);
+      noteParts.push('Because of this, we treated the newest ledger month as the current month (skipped the 1–5 previous-month rule for that month).');
+    }
+    if (picked.note) noteParts.push(picked.note);
+    step3Note = noteParts.length ? noteParts.join(' ') : undefined;
     if (picked.selected) {
       step3SelectedEntry = {
         date: picked.selected.date,
@@ -236,7 +330,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       };
       latestBalance = picked.selected.balance;
     } else {
-      latestBalance = pickLatestBalanceByDateRule(sortedLedgerEntries, asOfDate);
+      latestBalance = pickLatestBalanceByDateRule(sortedLedgerEntries, effectiveAsOfDate);
     }
     console.log('✅ Picked latest balance from ledger entries (date rule applied):', latestBalance);
   } else {
@@ -267,7 +361,9 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     : totalNonRental;
 
   const calculationTrace: CalculationTrace = {
-    asOfDateISO: asOfDate.toISOString().split('T')[0],
+    asOfDateISO: effectiveAsOfDate.toISOString().split('T')[0],
+    systemAsOfDateISO,
+    issueDateISO,
     step1: {
       lastZeroOrNegative:
         typeof lastZeroOrNegativeIndex === 'number' && sortedLedgerEntries
@@ -320,6 +416,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     totalNonRentalFromLastZero: finalTotalNonRentalFromLastZero,
     rentArrears: finalLatestBalance - finalTotalNonRentalFromLastZero,
     calculationTrace,
+    issueDate: issueDateISO,
   };
 }
 

@@ -218,8 +218,11 @@ export function parseFlexibleDate(raw: string): string | null {
 const DATE_TOKEN_REGEX =
   /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4})/;
 
+// Money tokens in ledgers almost always have cents. We intentionally require a
+// decimal part to avoid accidentally treating years (e.g. "2025"), charge codes,
+// and control numbers as monetary values.
 const MONEY_TOKEN_REGEX =
-  /(\(?-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?|\(?-?\$?\d+(?:\.\d{2})?\)?)/g;
+  /(\(?-?\$?(?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2}\)?)/g;
 
 export interface ParsedLedgerResult {
   ledgerEntries: LedgerEntry[];
@@ -289,19 +292,9 @@ export function parseLedgerFromText(text: string): ParsedLedgerResult {
     // If we have 1 amount, it's likely just the balance
     let balance = amounts.length >= 2 ? amounts[amounts.length - 1] : amounts[0];
     
-    // Validate balance - should be reasonable (not a control number)
-    // Control numbers are usually 5-9 digit whole numbers without decimals
-    // Balances should have decimals or be reasonable amounts
-    if (amounts.length >= 2) {
-      // If the last number looks like a control number (no decimal, large), try the second-to-last
-      const lastAmount = amounts[amounts.length - 1];
-      if (!String(lastAmount).includes('.') && lastAmount > 1000 && lastAmount < 1000000) {
-        // Might be a control number, use second-to-last if available
-        if (amounts.length >= 3) {
-          balance = amounts[amounts.length - 2];
-        }
-      }
-    }
+    // Note: money tokens are already constrained to values with cents (via MONEY_TOKEN_REGEX),
+    // so a balance like "1550.00" will parse to the number 1550 (String() drops trailing zeros).
+    // We should NOT treat that as a control number.
 
     // Determine debit/credit from remaining amounts.
     const nonBalance = amounts.length >= 2 ? amounts.slice(0, -1) : [];
@@ -349,7 +342,7 @@ export function parseLedgerFromText(text: string): ParsedLedgerResult {
     
     // For format with 3 amounts: DATE CODE DESCRIPTION BILLED PAID BALANCE
     // nonBalance would be [BILLED, PAID]
-    
+
     if (nonBalance.length >= 2) {
       // Format: BILLED, PAID, BALANCE (3 amounts total) OR debit, credit, balance
       // Check if this is a payment entry
@@ -363,7 +356,7 @@ export function parseLedgerFromText(text: string): ParsedLedgerResult {
         }
       } else {
         // Charge entry: first amount is BILLED (debit), second might be PAID (credit)
-        debit = Math.max(0, nonBalance[0]);
+      debit = Math.max(0, nonBalance[0]);
         // If second amount is different and positive, it might be a payment amount
         // But for charge entries, we typically only want the debit
         // Only set credit if it's clearly a payment and different from debit
