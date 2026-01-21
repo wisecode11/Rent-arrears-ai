@@ -1,4 +1,4 @@
-import { HuggingFaceResponse, ProcessedData, LedgerEntry } from '@/types';
+import { HuggingFaceResponse, ProcessedData, LedgerEntry, CalculationTrace, CalculationTraceNonRentItem } from '@/types';
 import { classifyDescription } from '@/lib/ledger-parser';
 
 /**
@@ -50,6 +50,66 @@ function pickLatestBalanceByDateRule(
   return sorted[0].balance;
 }
 
+function pickLatestBalanceEntryByDateRule(
+  ledgerEntries: LedgerEntry[],
+  asOfDate: Date
+): { rule: CalculationTrace['step3']['rule']; targetMonthISO: string; selected?: LedgerEntry; note?: string } {
+  if (!ledgerEntries.length) {
+    const monthISO = `${asOfDate.getFullYear()}-${String(asOfDate.getMonth() + 1).padStart(2, '0')}`;
+    return {
+      rule: asOfDate.getDate() >= 1 && asOfDate.getDate() <= 5 ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+',
+      targetMonthISO: monthISO,
+      selected: undefined,
+      note: 'No ledger entries available.',
+    };
+  }
+
+  const day = asOfDate.getDate();
+  const month = asOfDate.getMonth();
+  const year = asOfDate.getFullYear();
+  const usePrevMonth = day >= 1 && day <= 5;
+
+  const targetMonth = usePrevMonth ? (month === 0 ? 11 : month - 1) : month;
+  const targetYear = usePrevMonth && month === 0 ? year - 1 : year;
+  const targetMonthISO = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
+
+  const sortedNewest = [...ledgerEntries].sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+
+  const inTarget = sortedNewest.find((entry) => {
+    const d = new Date(entry.date);
+    return d.getMonth() === targetMonth && d.getFullYear() === targetYear;
+  });
+  if (inTarget) {
+    return {
+      rule: usePrevMonth ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+',
+      targetMonthISO,
+      selected: inTarget,
+    };
+  }
+
+  if (usePrevMonth) {
+    const beforeCurrentMonth = sortedNewest.find((entry) => {
+      const d = new Date(entry.date);
+      return d.getFullYear() < year || (d.getFullYear() === year && d.getMonth() < month);
+    });
+    return {
+      rule: 'prev-month-if-day-1-5',
+      targetMonthISO,
+      selected: beforeCurrentMonth ?? sortedNewest[0],
+      note: 'No entry found in target month; used latest entry before current month.',
+    };
+  }
+
+  return {
+    rule: 'current-month-if-day-6+',
+    targetMonthISO,
+    selected: sortedNewest[0],
+    note: 'No entry found in target month; used most recent known balance.',
+  };
+}
+
 export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date = new Date()): ProcessedData {
   // Calculate total non-rental charges (ALL charges from beginning to end)
   // Example: If there are charges from 2019 to 2025, this sums ALL of them
@@ -58,6 +118,12 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     (sum, charge) => sum + Math.abs(charge.amount), 
     0
   );
+
+  // Stable ledger ordering for "from that point onward" logic
+  const sortedLedgerEntries =
+    aiData.ledgerEntries && aiData.ledgerEntries.length > 0
+      ? [...aiData.ledgerEntries].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+      : undefined;
   
   // Step 1: Find the last zero or negative balance
   // This finds the most recent date when balance was $0.00 or negative
@@ -66,17 +132,12 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   let lastZeroOrNegativeBalance: number | undefined;
   let lastZeroOrNegativeIndex: number | undefined;
   
-  if (aiData.ledgerEntries && aiData.ledgerEntries.length > 0) {
-    // Sort entries by date (oldest first)
-    const sortedEntries = [...aiData.ledgerEntries].sort((a, b) => 
-      new Date(a.date).getTime() - new Date(b.date).getTime()
-    );
-    
+  if (sortedLedgerEntries && sortedLedgerEntries.length > 0) {
     // Find the most recent entry with zero or negative balance
-    for (let i = sortedEntries.length - 1; i >= 0; i--) {
-      if (sortedEntries[i].balance <= 0) {
-        lastZeroOrNegativeBalanceDate = sortedEntries[i].date;
-        lastZeroOrNegativeBalance = sortedEntries[i].balance;
+    for (let i = sortedLedgerEntries.length - 1; i >= 0; i--) {
+      if (sortedLedgerEntries[i].balance <= 0) {
+        lastZeroOrNegativeBalanceDate = sortedLedgerEntries[i].date;
+        lastZeroOrNegativeBalance = sortedLedgerEntries[i].balance;
         lastZeroOrNegativeIndex = i;
         break;
       }
@@ -89,25 +150,22 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   // - totalNonRentalFromLastZero = ONLY charges AFTER last zero/negative date (e.g., $975.00)
   // Example: If last zero was 04/06/2024, this only counts charges from 04/07/2024 onwards
   let totalNonRentalFromLastZero = 0;
+  let nonRentMethod: CalculationTrace['step2']['method'] = 'all-nonrental-fallback';
+  let nonRentItems: CalculationTraceNonRentItem[] = [];
+  let nonRentNote: string | undefined;
   
-  // Preferred: If we have ledger entries + the last zero index, compute from the ledger order.
-  // This matches the rule wording "from that point onward" even when multiple entries share the same date.
-  if (typeof lastZeroOrNegativeIndex === 'number' && aiData.ledgerEntries && aiData.ledgerEntries.length > 0) {
-    // Fallback: If no last zero date but we have ledger entries, use ledger entries
-    const sortedEntries = [...aiData.ledgerEntries].sort((a, b) =>
-      new Date(a.date).getTime() - new Date(b.date).getTime()
-    );
-
+  // Preferred: ledger-order calculation (matches "from that point onward" even within the same date)
+  if (typeof lastZeroOrNegativeIndex === 'number' && sortedLedgerEntries && sortedLedgerEntries.length > 0) {
+    nonRentMethod = 'ledger-order';
     // Count only entries AFTER the last <= 0 balance row.
-    for (let i = lastZeroOrNegativeIndex + 1; i < sortedEntries.length; i++) {
-      const entry = sortedEntries[i];
+    for (let i = lastZeroOrNegativeIndex + 1; i < sortedLedgerEntries.length; i++) {
+      const entry = sortedLedgerEntries[i];
       const debit = entry.debit ?? 0;
       if (debit <= 0) continue;
 
       // Payments/credits should not be counted here.
       const cls = classifyDescription(entry.description);
-      const isPaymentLike =
-        cls.isPayment || (entry.credit ?? 0) > 0 || entry.description.toLowerCase().includes('payment');
+      const isPaymentLike = cls.isPayment || (entry.credit ?? 0) > 0;
       if (isPaymentLike) continue;
 
       // Only exclude clear rent charges; everything else counts toward non-rent.
@@ -115,39 +173,49 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       if (isRentLike) continue;
 
       totalNonRentalFromLastZero += Math.abs(debit);
+      nonRentItems.push({
+        date: entry.date,
+        description: entry.description,
+        amount: Math.abs(debit),
+        category: cls.category && cls.category !== 'rent' ? cls.category : undefined,
+        ledgerIndex: i,
+      });
     }
-
-    console.log('📊 Non-rental charges calculation (ledger-based):', {
-      lastZeroDate: lastZeroOrNegativeBalanceDate,
-      ledgerEntries: sortedEntries.length,
-      totalNonRentalFromLastZero,
-    });
   } else if (lastZeroOrNegativeBalanceDate) {
-    // Backup: Use nonRentalCharges list by date (inclusive of the last-zero date).
-    // Note: date-only filtering can't distinguish same-day ordering, but is better than excluding the entire day.
+    // Backup: date-only filter (inclusive)
+    nonRentMethod = 'date-only';
+    nonRentNote = 'Ledger ordering unavailable; used date-only filter (inclusive).';
     const lastZeroDate = new Date(lastZeroOrNegativeBalanceDate);
-    totalNonRentalFromLastZero = aiData.nonRentalCharges
-      .filter((charge) => {
-        if (!charge.date) return false;
-        const chargeDate = new Date(charge.date);
-        return chargeDate >= lastZeroDate;
-      })
-      .reduce((sum, charge) => sum + Math.abs(charge.amount), 0);
-
-    console.log('📊 Non-rental charges calculation (date-based):', {
-      lastZeroDate: lastZeroOrNegativeBalanceDate,
-      totalNonRentalCharges: aiData.nonRentalCharges.length,
-      totalNonRentalFromLastZero,
-    });
+    const included = aiData.nonRentalCharges.filter((c) => c.date && new Date(c.date) >= lastZeroDate);
+    totalNonRentalFromLastZero = included.reduce((sum, c) => sum + Math.abs(c.amount), 0);
+    nonRentItems = included.map((c) => ({
+      date: c.date ?? lastZeroOrNegativeBalanceDate,
+      description: c.description,
+      amount: Math.abs(c.amount),
+      category: c.category,
+    }));
   } else {
     // Fallback: if no ledger entries or last zero date, use all non-rental charges
+    nonRentMethod = 'all-nonrental-fallback';
+    nonRentNote = 'No ledger entries / no last-zero date; using all non-rental charges.';
     totalNonRentalFromLastZero = totalNonRental;
+    nonRentItems = aiData.nonRentalCharges.map((c) => ({
+      date: c.date ?? '',
+      description: c.description,
+      amount: Math.abs(c.amount),
+      category: c.category,
+    }));
   }
   
   // Step 3: Identify the correct latest balance based on today's date
   // IMPORTANT: Follow the date rule (1st-5th => previous month; 6th+ => current month)
   // Prefer ledgerEntries for this since they contain dated running balances.
   let latestBalance = 0;
+  let step3Rule: CalculationTrace['step3']['rule'] =
+    asOfDate.getDate() >= 1 && asOfDate.getDate() <= 5 ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+';
+  let step3TargetMonthISO = `${asOfDate.getFullYear()}-${String(asOfDate.getMonth() + 1).padStart(2, '0')}`;
+  let step3SelectedEntry: CalculationTrace['step3']['selectedEntry'] | undefined;
+  let step3Note: string | undefined;
   
   console.log('💰 Balance extraction - Input data:', {
     finalBalance: aiData.finalBalance,
@@ -155,16 +223,31 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     ledgerEntriesCount: aiData.ledgerEntries?.length || 0
   });
   
-  if (aiData.ledgerEntries && aiData.ledgerEntries.length > 0) {
-    latestBalance = pickLatestBalanceByDateRule(aiData.ledgerEntries, asOfDate);
+  if (sortedLedgerEntries && sortedLedgerEntries.length > 0) {
+    const picked = pickLatestBalanceEntryByDateRule(sortedLedgerEntries, asOfDate);
+    step3Rule = picked.rule;
+    step3TargetMonthISO = picked.targetMonthISO;
+    step3Note = picked.note;
+    if (picked.selected) {
+      step3SelectedEntry = {
+        date: picked.selected.date,
+        balance: picked.selected.balance,
+        description: picked.selected.description,
+      };
+      latestBalance = picked.selected.balance;
+    } else {
+      latestBalance = pickLatestBalanceByDateRule(sortedLedgerEntries, asOfDate);
+    }
     console.log('✅ Picked latest balance from ledger entries (date rule applied):', latestBalance);
   } else {
     // If no ledger entries, we can't apply the month rule reliably; use finalBalance if present, else openingBalance.
     if (typeof aiData.finalBalance === 'number' && !isNaN(aiData.finalBalance)) {
       latestBalance = aiData.finalBalance;
+      step3Note = 'No ledger entries; using finalBalance as latest balance.';
       console.log('⚠️ No ledger entries; using finalBalance as latestBalance fallback:', latestBalance);
     } else {
       latestBalance = aiData.openingBalance || 0;
+      step3Note = 'No ledger entries and no finalBalance; using openingBalance as latest balance.';
       console.log('⚠️ No ledger entries; using openingBalance as latestBalance fallback:', latestBalance);
     }
   }
@@ -182,6 +265,44 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   const finalTotalNonRentalFromLastZero = totalNonRentalFromLastZero > 0 
     ? totalNonRentalFromLastZero 
     : totalNonRental;
+
+  const calculationTrace: CalculationTrace = {
+    asOfDateISO: asOfDate.toISOString().split('T')[0],
+    step1: {
+      lastZeroOrNegative:
+        typeof lastZeroOrNegativeIndex === 'number' && sortedLedgerEntries
+          ? {
+              date: lastZeroOrNegativeBalanceDate ?? sortedLedgerEntries[lastZeroOrNegativeIndex]?.date,
+              balance: lastZeroOrNegativeBalance ?? sortedLedgerEntries[lastZeroOrNegativeIndex]?.balance ?? 0,
+              ledgerIndex: lastZeroOrNegativeIndex,
+              description: sortedLedgerEntries[lastZeroOrNegativeIndex]?.description,
+            }
+          : undefined,
+      note: !sortedLedgerEntries
+        ? 'Ledger entries were not available.'
+        : lastZeroOrNegativeIndex === undefined
+          ? 'No zero/negative balance found in ledger.'
+          : undefined,
+    },
+    step2: {
+      method: nonRentMethod,
+      includedItemsCount: nonRentItems.length,
+      includedItems: nonRentItems,
+      totalNonRent: finalTotalNonRentalFromLastZero,
+      note: nonRentNote,
+    },
+    step3: {
+      rule: step3Rule,
+      targetMonthISO: step3TargetMonthISO,
+      selectedEntry: step3SelectedEntry,
+      latestBalance,
+      note: step3Note,
+    },
+    step4: {
+      rentArrears: latestBalance - finalTotalNonRentalFromLastZero,
+      formulaHuman: `${latestBalance} - ${finalTotalNonRentalFromLastZero} = ${latestBalance - finalTotalNonRentalFromLastZero}`,
+    },
+  };
   
   return {
     tenantName: aiData.tenantName,
@@ -198,6 +319,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     latestBalance: finalLatestBalance,
     totalNonRentalFromLastZero: finalTotalNonRentalFromLastZero,
     rentArrears: finalLatestBalance - finalTotalNonRentalFromLastZero,
+    calculationTrace,
   };
 }
 

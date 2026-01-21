@@ -21,12 +21,22 @@ export default function ProcessingResults({
   const [showRentalCharges, setShowRentalCharges] = useState(false);
   const [showNonRentalCharges, setShowNonRentalCharges] = useState(false);
   const [showNonRentalFromLastZero, setShowNonRentalFromLastZero] = useState(false);
+  const [showCalculationFlow, setShowCalculationFlow] = useState(false);
+  const [showStep2Items, setShowStep2Items] = useState(false);
+  const [step2Query, setStep2Query] = useState('');
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD'
     }).format(amount);
+  };
+
+  const formatISODate = (iso?: string) => {
+    if (!iso) return 'N/A';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString('en-US');
   };
 
   const getFinalAmountColor = () => {
@@ -354,7 +364,7 @@ export default function ProcessingResults({
                     const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
                     const filteredCharges = data.nonRentalCharges.filter(charge => {
                       if (!charge.date) return false;
-                      return new Date(charge.date) >= lastZeroDate;
+                      return new Date(charge.date) > lastZeroDate;
                     });
                     return `${filteredCharges.length} items`;
                   })()}
@@ -384,7 +394,7 @@ export default function ProcessingResults({
             const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
             const filteredCharges = data.nonRentalCharges.filter(charge => {
               if (!charge.date) return false;
-              return new Date(charge.date) >= lastZeroDate;
+              return new Date(charge.date) > lastZeroDate;
             });
 
             if (filteredCharges.length === 0) {
@@ -475,6 +485,196 @@ export default function ProcessingResults({
               </pre>
               <div className="mt-4 text-xs text-slate-400">
                 Total characters: {extractedText?.length || 0}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Calculation Flow (4 steps) - shown under Document text preview */}
+      {data.calculationTrace && (
+        <div className="bg-slate-950/35 rounded-2xl shadow-xl p-8 border border-white/10 ring-1 ring-white/10 backdrop-blur">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-xl sm:text-2xl font-semibold text-white tracking-tight">Calculation flow (4 steps)</h3>
+              <p className="text-sm text-slate-400 mt-1">
+                Easy breakdown of where calculation started and which rules were applied (as-of:{' '}
+                <span className="text-slate-200 font-medium">{data.calculationTrace.asOfDateISO}</span>)
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowCalculationFlow((v) => !v)}
+              className="shrink-0 inline-flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-full border border-white/10 hover:border-white/20 transition-all duration-200 active:scale-[0.98]"
+              aria-expanded={showCalculationFlow}
+            >
+              <span className="text-xs font-medium text-slate-100">
+                {showCalculationFlow ? 'Collapse' : 'Expand'}
+              </span>
+              {showCalculationFlow ? (
+                <ChevronUp className="w-4 h-4 text-slate-200" />
+              ) : (
+                <ChevronDown className="w-4 h-4 text-slate-200" />
+              )}
+            </button>
+          </div>
+
+          {showCalculationFlow && (
+            <div className="mt-6 space-y-4">
+              {/* Step 1 */}
+              <div className="p-4 bg-white/5 rounded-xl border border-white/10">
+                <p className="text-sm font-semibold text-white">Step 1 — Find last zero/negative balance</p>
+                {data.calculationTrace.step1.lastZeroOrNegative ? (
+                  <p className="text-sm text-slate-300 mt-2">
+                    Found at <span className="text-slate-100">{formatISODate(data.calculationTrace.step1.lastZeroOrNegative.date)}</span>{' '}
+                    with balance <span className="text-slate-100">{formatCurrency(data.calculationTrace.step1.lastZeroOrNegative.balance)}</span>
+                    {data.calculationTrace.step1.lastZeroOrNegative.description ? (
+                      <> — <span className="text-slate-200">{data.calculationTrace.step1.lastZeroOrNegative.description}</span></>
+                    ) : null}
+                  </p>
+                ) : (
+                  <p className="text-sm text-slate-300 mt-2">
+                    {data.calculationTrace.step1.note ?? 'No last zero/negative balance found.'}
+                  </p>
+                )}
+              </div>
+
+              {/* Step 2 */}
+              <div className="p-4 bg-white/5 rounded-xl border border-white/10">
+                {(() => {
+                  const items = data.calculationTrace.step2.includedItems || [];
+                  const q = step2Query.trim().toLowerCase();
+                  const filtered = q
+                    ? items.filter((it) => {
+                        const hay = `${it.description} ${it.category ?? ''}`.toLowerCase();
+                        return hay.includes(q);
+                      })
+                    : items;
+
+                  const counts = filtered.reduce<Record<string, number>>((acc, it) => {
+                    const key = it.category ?? 'other';
+                    acc[key] = (acc[key] ?? 0) + 1;
+                    return acc;
+                  }, {});
+
+                  return (
+                    <>
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-semibold text-white">Step 2 — Add up non‑rent charges (from that point onward)</p>
+                          <p className="text-sm text-slate-300 mt-2">
+                            Method: <span className="text-slate-100">{data.calculationTrace.step2.method}</span> — Included{' '}
+                            <span className="text-slate-100">{data.calculationTrace.step2.includedItemsCount}</span> items totaling{' '}
+                            <span className="text-slate-100">{formatCurrency(data.calculationTrace.step2.totalNonRent)}</span>.
+                          </p>
+                          {data.calculationTrace.step2.note && (
+                            <p className="text-xs text-slate-400 mt-1">{data.calculationTrace.step2.note}</p>
+                          )}
+                        </div>
+                        {items.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setShowStep2Items((v) => !v)}
+                            className="shrink-0 inline-flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-full border border-white/10 hover:border-white/20 transition-all duration-200 active:scale-[0.98]"
+                            aria-expanded={showStep2Items}
+                          >
+                            <span className="text-xs font-medium text-slate-100">
+                              {showStep2Items ? 'Hide items' : 'View items'}
+                            </span>
+                            {showStep2Items ? (
+                              <ChevronUp className="w-4 h-4 text-slate-200" />
+                            ) : (
+                              <ChevronDown className="w-4 h-4 text-slate-200" />
+                            )}
+                          </button>
+                        )}
+                      </div>
+
+                      {Object.keys(counts).length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {Object.entries(counts)
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([cat, n]) => (
+                              <span
+                                key={cat}
+                                className="px-2.5 py-1 bg-white/5 text-slate-200 rounded-full text-xs font-medium ring-1 ring-white/10"
+                                title="Category count in included Step 2 items"
+                              >
+                                {cat}: {n}
+                              </span>
+                            ))}
+                        </div>
+                      )}
+
+                      {showStep2Items && (
+                        <div className="mt-4">
+                          <div className="flex items-center justify-between gap-3 mb-3">
+                            <input
+                              value={step2Query}
+                              onChange={(e) => setStep2Query(e.target.value)}
+                              placeholder="Search items (e.g., nsf, returned check, bad_check)"
+                              className="w-full px-3 py-2 rounded-lg bg-slate-950/40 border border-white/10 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-white/15"
+                            />
+                            <span className="shrink-0 text-xs text-slate-400">
+                              {filtered.length}/{items.length}
+                            </span>
+                          </div>
+                          <div className="space-y-2">
+                            {filtered.map((it, idx) => (
+                              <div key={idx} className="p-3 bg-slate-950/40 rounded-lg border border-white/10">
+                                <div className="flex items-start justify-between gap-4">
+                                  <div className="min-w-0">
+                                    <p className="text-sm text-slate-100 truncate">{it.description}</p>
+                                    <p className="text-xs text-slate-400 mt-1">
+                                      {formatISODate(it.date)}
+                                      {it.category ? (
+                                        <span className="ml-2 px-2 py-0.5 bg-white/5 rounded-full ring-1 ring-white/10">
+                                          {it.category}
+                                        </span>
+                                      ) : null}
+                                    </p>
+                                  </div>
+                                  <p className="text-sm font-semibold text-slate-100">{formatCurrency(it.amount)}</p>
+                                </div>
+                              </div>
+                            ))}
+                            {filtered.length === 0 && (
+                              <p className="text-sm text-slate-400 italic">No items match your search.</p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+
+              {/* Step 3 */}
+              <div className="p-4 bg-white/5 rounded-xl border border-white/10">
+                <p className="text-sm font-semibold text-white">Step 3 — Identify the correct latest balance</p>
+                <p className="text-sm text-slate-300 mt-2">
+                  Rule used: <span className="text-slate-100">{data.calculationTrace.step3.rule}</span> — Target month:{' '}
+                  <span className="text-slate-100">{data.calculationTrace.step3.targetMonthISO}</span>
+                </p>
+                <p className="text-sm text-slate-300 mt-1">
+                  Latest balance chosen: <span className="text-slate-100">{formatCurrency(data.calculationTrace.step3.latestBalance)}</span>
+                  {data.calculationTrace.step3.selectedEntry ? (
+                    <> (from {formatISODate(data.calculationTrace.step3.selectedEntry.date)})</>
+                  ) : null}
+                </p>
+                {data.calculationTrace.step3.note && (
+                  <p className="text-xs text-slate-400 mt-1">{data.calculationTrace.step3.note}</p>
+                )}
+              </div>
+
+              {/* Step 4 */}
+              <div className="p-4 bg-white/5 rounded-xl border border-white/10">
+                <p className="text-sm font-semibold text-white">Step 4 — Calculate rent arrears</p>
+                <p className="text-sm text-slate-300 mt-2">Rent Arrears = Latest Balance − Non‑rent Total</p>
+                <p className="text-slate-100 font-mono text-base mt-2">
+                  {formatCurrency(data.calculationTrace.step4.rentArrears)} = {formatCurrency(data.calculationTrace.step3.latestBalance)} − {formatCurrency(data.calculationTrace.step2.totalNonRent)}
+                </p>
+                <p className="text-xs text-slate-400 mt-1 font-mono">{data.calculationTrace.step4.formulaHuman}</p>
               </div>
             </div>
           )}

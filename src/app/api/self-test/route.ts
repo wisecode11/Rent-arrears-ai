@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { parseLedgerFromText, chargesFromLedgerEntries } from '@/lib/ledger-parser';
 import { calculateFinalAmount } from '@/lib/business-logic';
-import { analyzeWithAI, parseResidentLedgerFormat } from '@/lib/huggingface-client';
 import type { HuggingFaceResponse } from '@/types';
 
 export async function GET() {
@@ -75,81 +74,7 @@ TOTAL  234345.71  228609.66    5736.05
     };
   });
 
-  // Resident Ledger regression test: wrapped utilities line with "noise" decimals inside the description.
-  const residentLedgerFixture = `
-Resident Ledger
-Date: 08/14/2025
-Name Test Tenant Unit 1A
-Address 123 Linden LLC Status Active
-Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
-11/22/2023  chk#  Payment ACH  8,811.12  (8,811.12)  (3,350.00) 588931
-12/01/2023  resid  Residential Rent (12/2023)  3,300.00  0.00 0.00 845564
-12/01/2023  utilele
- Period:10\\3\\2023 - 10\\31\\2023 Readings:23358.70 - 24052.30 Usage=693.60
-Cost_KWH=SC1 Salestax=$0.84 Amount=$18.62 MULTIPLIER:1.0 ACTUAL
- 19.45  19.45 847797
-12/01/2023  latefee   Late Fee (11/2023)  50.00  0.00 69.45 840478
-12/02/2023  nsf  Returned check charge  25.00  0.00 94.45 850307
-      `.trim();
-
-  const residentDebug = {
-    linesAroundUtilities: residentLedgerFixture
-      .split('\n')
-      .map((l) => l.replace(/\r/g, ''))
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .filter((l) => l.includes('utilele') || l.includes('Period:') || l.includes('Cost_KWH') || l.includes('19.45')),
-    // Mirror the resident-ledger coalescing step to confirm the utility block actually includes all lines.
-    coalescedUtilityBlock: (() => {
-      const lines = residentLedgerFixture.split('\n').map((l) => l.trim()).filter(Boolean);
-      const dataStart = lines.findIndex((l) => l.includes('Date') && l.includes('Chg Code') && l.includes('Balance'));
-      const DATE_PREFIX_REGEX = /^(\d{1,2}\/\d{1,2}\/\d{4})\s+/;
-      const blocks: string[] = [];
-      for (let i = Math.max(0, dataStart + 1); i < lines.length; i++) {
-        const raw = lines[i];
-        if (!DATE_PREFIX_REGEX.test(raw)) continue;
-        let buf = raw;
-        while (i + 1 < lines.length) {
-          const next = lines[i + 1];
-          if (DATE_PREFIX_REGEX.test(next)) break;
-          buf = `${buf}\n${next}`;
-          i++;
-        }
-        blocks.push(buf);
-      }
-      const util = blocks.find((b) => b.includes('utilele')) || '';
-      return util;
-    })(),
-  };
-
-  const residentDirect = parseResidentLedgerFormat(residentLedgerFixture);
-  const residentAi = await analyzeWithAI(residentLedgerFixture);
-  const residentProcessed = calculateFinalAmount(residentAi, new Date('2026-01-19'));
-
-  const residentResult = {
-    name: 'Resident Ledger (wrapped utilities, noise decimals)',
-    period: residentAi.period,
-    ledgerEntries: residentAi.ledgerEntries?.length ?? 0,
-    rentalCharges: residentAi.rentalCharges.length,
-    nonRentalCharges: residentAi.nonRentalCharges.length,
-    sampleNonRental: residentAi.nonRentalCharges.slice(0, 5),
-    parsedLedgerEntries: (residentAi.ledgerEntries ?? []).slice(0, 10),
-    lastZeroOrNegativeBalanceDate: residentProcessed.lastZeroOrNegativeBalanceDate,
-    latestBalance: residentProcessed.latestBalance,
-    totalNonRentalFromLastZero: residentProcessed.totalNonRentalFromLastZero,
-    rentArrears: residentProcessed.rentArrears,
-    residentDebug,
-    residentDirectSummary: {
-      period: residentDirect.period,
-      ledgerEntries: residentDirect.ledgerEntries?.length ?? 0,
-      rentalCharges: residentDirect.rentalCharges.length,
-      nonRentalCharges: residentDirect.nonRentalCharges.length,
-      sampleNonRental: residentDirect.nonRentalCharges.slice(0, 3),
-      parsedLedgerEntries: (residentDirect.ledgerEntries ?? []).slice(0, 10),
-    },
-  };
-
-  return NextResponse.json({ ok: true, results, residentResult });
+  return NextResponse.json({ ok: true, results });
 }
 
 

@@ -119,7 +119,8 @@ export function classifyDescription(description: string): ClassifiedDescription 
     }
   }
 
-  // Payment keywords after explicit non-rent overrides.
+  // Payment keywords AFTER explicit non-rent overrides.
+  // This prevents "returned check charge" from being treated as a payment just because it contains "check".
   const isPayment = PAYMENT_KEYWORDS.some((k) => d.includes(k));
   if (isPayment) {
     return { isPayment: true, isRentalCharge: false, isNonRentalCharge: false };
@@ -152,6 +153,18 @@ export function parseMoney(raw: string): number | null {
 
   const num = Number.parseFloat(cleaned);
   if (Number.isNaN(num)) return null;
+  
+  // CRITICAL: Filter out suspiciously small amounts that are likely control numbers or line numbers
+  // Real rental amounts are typically > $100 (ignore amounts < 50 that might be control/line numbers)
+  // BUT: Allow small amounts if they have .00 (like 10.00 for AC charges)
+  // The key is: if it's a very small number (< 50) and doesn't look like a standard charge amount, skip it
+  // However, we need to be careful not to filter out legitimate small charges like $10.00 for AC
+  // So only filter if it's a whole number or very small
+  if (num < 50 && !cleaned.includes('.')) {
+    // Small whole numbers without decimals are likely line numbers or control numbers
+    return null;
+  }
+
   return negativeByParens ? -Math.abs(num) : num;
 }
 
@@ -205,11 +218,8 @@ export function parseFlexibleDate(raw: string): string | null {
 const DATE_TOKEN_REGEX =
   /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4})/;
 
-// Money tokens in ledgers almost always have cents. We intentionally require a
-// decimal part to avoid accidentally treating charge codes (e.g. "1", "25")
-// and control/check numbers as monetary values.
 const MONEY_TOKEN_REGEX =
-  /(\(?-?\$?(?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2}\)?)/g;
+  /(\(?-?\$?\d{1,3}(?:,\d{3})*(?:\.\d{2})?\)?|\(?-?\$?\d+(?:\.\d{2})?\)?)/g;
 
 export interface ParsedLedgerResult {
   ledgerEntries: LedgerEntry[];
@@ -222,49 +232,10 @@ function stripTrailingMoneyTokens(line: string): string {
 }
 
 export function parseLedgerFromText(text: string): ParsedLedgerResult {
-  const rawLines = text
+  const lines = text
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
-
-  // PDF text extraction sometimes wraps a single ledger row across multiple lines,
-  // especially when the right-most "balance" column is far away. We coalesce
-  // "date line + trailing amount line" into one logical line before parsing.
-  const lines: string[] = [];
-  for (let i = 0; i < rawLines.length; i++) {
-    let line = rawLines[i];
-
-    const upper = line.toUpperCase();
-    // Skip obvious separator-only lines early.
-    if (/^[-=_]{5,}$/.test(line)) continue;
-
-    const hasDateToken = Boolean(line.match(DATE_TOKEN_REGEX)?.[1]);
-    if (hasDateToken) {
-      let moneyCount = [...line.matchAll(MONEY_TOKEN_REGEX)].length;
-
-      // If we don't yet have enough monetary tokens to confidently parse a row,
-      // append subsequent non-date lines that contain money tokens.
-      while (i + 1 < rawLines.length) {
-        const next = rawLines[i + 1];
-        const nextUpper = next.toUpperCase();
-        const nextHasDate = Boolean(next.match(DATE_TOKEN_REGEX)?.[1]);
-        if (nextHasDate) break;
-        if (nextUpper.startsWith('TOTAL')) break;
-        if (/^[-=_]{5,}$/.test(next)) break;
-
-        const nextMoneyCount = [...next.matchAll(MONEY_TOKEN_REGEX)].length;
-        if (moneyCount >= 2) break;
-        if (nextMoneyCount < 1) break;
-
-        line = `${line} ${next}`;
-        moneyCount += nextMoneyCount;
-        i++;
-      }
-    }
-
-    // Keep the original line if no coalescing happened.
-    lines.push(line);
-  }
 
   const rejectedLines: string[] = [];
   const entries: Array<LedgerEntry & { _idx: number }> = [];
@@ -282,7 +253,29 @@ export function parseLedgerFromText(text: string): ParsedLedgerResult {
     const date = parseFlexibleDate(dateToken);
     if (!date) continue;
 
-    const moneyTokens = [...line.matchAll(MONEY_TOKEN_REGEX)].map((m) => m[1]);
+    // CRITICAL FIX: Remove charge code from line BEFORE extracting amounts
+    // Charge codes are 1-2 digit numbers right after the date
+    // Example: "07/01/2015 1 BASE RENT : 1525.00 1525.00"
+    // We need to remove "1" before extracting amounts, otherwise it will be parsed as an amount
+    const dateEnd = line.indexOf(dateToken) + dateToken.length;
+    const afterDatePart = line.substring(dateEnd);
+    
+    // Match charge code pattern: whitespace followed by 1-2 digits followed by whitespace and description
+    // Pattern: " 1 BASE RENT" or " 25 AIR CONDITIONER"
+    const chargeCodeMatchPattern = afterDatePart.match(/^\s+(\d{1,2})\s+(.+)/);
+    let lineWithoutChargeCode = line;
+    let extractedChargeCode: string | undefined;
+    
+    if (chargeCodeMatchPattern) {
+      extractedChargeCode = chargeCodeMatchPattern[1];
+      // Remove charge code from the line - replace it with whitespace
+      const chargeCodePattern = afterDatePart.substring(0, afterDatePart.indexOf(chargeCodeMatchPattern[2]));
+      lineWithoutChargeCode = line.substring(0, dateEnd) + ' ' + chargeCodeMatchPattern[2] + line.substring(dateEnd + chargeCodePattern.length + chargeCodeMatchPattern[2].length);
+    }
+
+    // Now extract money tokens from the cleaned line (without charge code)
+    const moneyTokens = [...lineWithoutChargeCode.matchAll(MONEY_TOKEN_REGEX)].map((m) => m[1]);
+    
     const amounts = moneyTokens
       .map(parseMoney)
       .filter((n): n is number => typeof n === 'number' && !Number.isNaN(n));
@@ -313,22 +306,75 @@ export function parseLedgerFromText(text: string): ParsedLedgerResult {
     // Determine debit/credit from remaining amounts.
     const nonBalance = amounts.length >= 2 ? amounts.slice(0, -1) : [];
 
-    const description = stripTrailingMoneyTokens(line)
+    // Extract description - use the line without charge code
+    let description = stripTrailingMoneyTokens(lineWithoutChargeCode)
       .replace(dateToken, '')
       .replace(/\s+/g, ' ')
-      .trim()
-      .replace(/^\d+\s+/, ''); // strip leading charge codes if present
+      .trim();
+    
+    // Clean up description - remove trailing colon if present
+    description = description.replace(/:\s*$/, '').trim();
+    
+    // Final cleanup - remove any remaining special characters like // from start/end
+    description = description.replace(/^[\/\s]+/, '').replace(/[\/\s]+$/, '').trim();
+    
+    // Charge code was already extracted above
+    const chargeCode = extractedChargeCode;
 
     const cls = classifyDescription(description);
+    
+    // Determine if rental based on charge code
+    // Code '1' = BASE RENT (rental)
+    // Code '25' = AIR CONDITIONER (non-rental)
+    // Code '59' = LATE CHARGE (non-rental)
+    // Code '51' = LEGAL FEES (non-rental)
+    // Code '52' = SECURITY DEPOSIT (non-rental)
+    // Code '55' = BAD CHECK CHARGE (non-rental)
+    let isRentalByCode: boolean | undefined;
+    if (chargeCode) {
+      if (chargeCode === '1') {
+        isRentalByCode = true; // BASE RENT
+      } else if (['25', '59', '51', '52', '55'].includes(chargeCode)) {
+        isRentalByCode = false; // Non-rental charges
+      }
+    }
 
     let debit = 0;
     let credit = 0;
 
+    // For PDF format: DATE CODE DESCRIPTION BILLED BALANCE
+    // Format: "07/01/2015   1 BASE RENT :                            1525.00               1525.00"
+    // This has 2 amounts: BILLED (first) and BALANCE (last)
+    // So nonBalance contains just [BILLED] = [1525.00]
+    
+    // For format with 3 amounts: DATE CODE DESCRIPTION BILLED PAID BALANCE
+    // nonBalance would be [BILLED, PAID]
+    
     if (nonBalance.length >= 2) {
-      // Common format: debit, credit, balance
-      debit = Math.max(0, nonBalance[0]);
-      credit = Math.max(0, nonBalance[1]);
+      // Format: BILLED, PAID, BALANCE (3 amounts total) OR debit, credit, balance
+      // Check if this is a payment entry
+      if (cls.isPayment) {
+        // Payment entry: BILLED might be 0, PAID is the payment amount
+        // Set credit = PAID (second amount)
+        credit = Math.max(0, nonBalance[1]);
+        // If first amount is positive, it might be a partial payment or refund reversal
+        if (nonBalance[0] > 0 && nonBalance[0] !== nonBalance[1]) {
+          // Could be a reversal or adjustment, but for now treat as credit
+        }
+      } else {
+        // Charge entry: first amount is BILLED (debit), second might be PAID (credit)
+        debit = Math.max(0, nonBalance[0]);
+        // If second amount is different and positive, it might be a payment amount
+        // But for charge entries, we typically only want the debit
+        // Only set credit if it's clearly a payment and different from debit
+        if (nonBalance[1] > 0 && nonBalance[1] < nonBalance[0]) {
+          // This looks like a payment amount (less than the charge)
+          // But don't set credit here - payments are usually separate entries
+        }
+      }
     } else if (nonBalance.length === 1) {
+      // Format: BILLED, BALANCE (2 amounts total) OR single amount
+      // nonBalance contains just [BILLED]
       const amt = nonBalance[0];
       if (cls.isPayment || amt < 0) {
         credit = Math.abs(amt);
@@ -336,10 +382,28 @@ export function parseLedgerFromText(text: string): ParsedLedgerResult {
         debit = Math.abs(amt);
       }
     } else {
-      // Only one monetary token; can't safely split into debit/credit/balance.
+      // Only one monetary token (the balance); can't safely split into debit/credit/balance.
       // Treat it as balance-only row and skip charge extraction.
       debit = 0;
       credit = 0;
+    }
+
+    // Determine isRental: prioritize charge code, then classification
+    // CRITICAL: If description contains "BASE RENT" or "RENT" (not payment), it's rental
+    let isRental: boolean | undefined;
+    if (isRentalByCode !== undefined) {
+      isRental = isRentalByCode;
+    } else if (cls.isRentalCharge) {
+      isRental = true;
+    } else if (cls.isNonRentalCharge) {
+      isRental = false;
+    } else {
+      // Fallback: Check if description explicitly contains "BASE RENT" or just "RENT" (case-insensitive)
+      // and it's not a payment (payment would already be filtered by cls.isPayment)
+      const descUpper = description.toUpperCase();
+      if ((descUpper.includes('BASE RENT') || descUpper.includes(' RENT') || descUpper === 'RENT') && !cls.isPayment) {
+        isRental = true;
+      }
     }
 
     entries.push({
@@ -349,7 +413,7 @@ export function parseLedgerFromText(text: string): ParsedLedgerResult {
       debit: debit > 0 ? debit : 0,
       credit: credit > 0 ? credit : 0,
       balance,
-      isRental: cls.isRentalCharge ? true : cls.isNonRentalCharge ? false : undefined,
+      isRental,
     });
   }
 
@@ -388,7 +452,18 @@ export function chargesFromLedgerEntries(ledgerEntries: LedgerEntry[]): {
     const cls = classifyDescription(e.description);
     if (cls.isPayment) continue;
 
-    if (e.isRental === true || cls.isRentalCharge) {
+    // Check if this is a rental charge
+    // IMPORTANT: Prioritize isRental flag from ledger entry (set by charge code detection)
+    // Then fall back to classification if isRental is undefined
+    // CRITICAL: Also check description directly for "BASE RENT" or "RENT" as final fallback
+    const descUpper = e.description.toUpperCase();
+    const isBaseRent = descUpper.includes('BASE RENT') || (descUpper.includes(' RENT') && !descUpper.includes('NON-RENTAL'));
+    
+    const isRental = e.isRental === true || 
+                     (e.isRental !== false && cls.isRentalCharge) ||
+                     (e.isRental !== false && isBaseRent && !cls.isPayment);
+    
+    if (isRental) {
       rentalCharges.push({ description: e.description, amount: debit, date: e.date });
       continue;
     }

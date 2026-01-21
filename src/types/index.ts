@@ -22,6 +22,49 @@ export interface LedgerEntry {
   isRental?: boolean; // true if rental charge, false if non-rental
 }
 
+export interface CalculationTraceNonRentItem {
+  date: string;
+  description: string;
+  amount: number;
+  category?: string;
+  ledgerIndex?: number;
+}
+
+export interface CalculationTrace {
+  asOfDateISO: string;
+  step1: {
+    lastZeroOrNegative?: {
+      date: string;
+      balance: number;
+      ledgerIndex: number;
+      description?: string;
+    };
+    note?: string;
+  };
+  step2: {
+    method: 'ledger-order' | 'date-only' | 'all-nonrental-fallback';
+    includedItemsCount: number;
+    includedItems: CalculationTraceNonRentItem[];
+    totalNonRent: number;
+    note?: string;
+  };
+  step3: {
+    rule: 'prev-month-if-day-1-5' | 'current-month-if-day-6+';
+    targetMonthISO: string; // YYYY-MM
+    selectedEntry?: {
+      date: string;
+      balance: number;
+      description?: string;
+    };
+    latestBalance: number;
+    note?: string;
+  };
+  step4: {
+    rentArrears: number;
+    formulaHuman: string;
+  };
+}
+
 export interface ProcessedData {
   tenantName: string;
   propertyName: string;
@@ -37,8 +80,8 @@ export interface ProcessedData {
   latestBalance: number;
   totalNonRentalFromLastZero: number;
   rentArrears: number;
-  // Extracted text from PDF for Excel report
   extractedText?: string;
+  calculationTrace?: CalculationTrace;
 }
 
 export interface APIResponse {
@@ -53,8 +96,8 @@ export interface HuggingFaceResponse {
   propertyName: string;
   period: string;
   openingBalance: number;
-  finalBalance?: number; // Latest/final balance from the document
+  finalBalance?: number;
   rentalCharges: RentalCharge[];
   nonRentalCharges: NonRentalCharge[];
-  ledgerEntries?: LedgerEntry[]; // Optional: full ledger if available
+  ledgerEntries?: LedgerEntry[];
 }
