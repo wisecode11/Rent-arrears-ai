@@ -18,6 +18,9 @@ export interface ClassifiedDescription {
   isPayment: boolean;
   isRentalCharge: boolean;
   isNonRentalCharge: boolean;
+  // Balance-forward / opening-balance rows are NOT charges and must not be counted as non-rent.
+  // Examples: "YEAR STARTING BALANCE 2016", "BALANCE FORWARD", "BEGINNING BALANCE".
+  isBalanceForward: boolean;
   category?: ChargeCategory;
 }
 
@@ -63,6 +66,25 @@ const RENT_KEYWORDS = [
   'monthly rent',
   'rental charge',
   'affrent',
+];
+
+// Rows that represent a carry-forward/opening balance, not an actual charge.
+// IMPORTANT: These can appear with a "billed" amount equal to the existing balance due,
+// but should never be counted as a non-rental charge.
+const BALANCE_FORWARD_KEYWORDS = [
+  'year starting balance',
+  'starting balance',
+  'beginning balance',
+  'opening balance',
+  'balance forward',
+  'balance brought forward',
+  'brought forward',
+  'carry forward',
+  'carried forward',
+  'previous balance',
+  'prior balance',
+  'balance carried forward',
+  'balance b/f',
 ];
 
 const NON_RENT_KEYWORDS: Array<{ keyword: string; category: ChargeCategory }> = [
@@ -112,10 +134,26 @@ function normalizeText(input: string): string {
 export function classifyDescription(description: string): ClassifiedDescription {
   const d = normalizeText(description);
 
+  // Balance-forward/opening-balance rows are NOT charges.
+  if (BALANCE_FORWARD_KEYWORDS.some((k) => d.includes(k))) {
+    return {
+      isPayment: false,
+      isRentalCharge: false,
+      isNonRentalCharge: false,
+      isBalanceForward: true,
+    };
+  }
+
   // Explicit non-rent keywords win.
   for (const { keyword, category } of NON_RENT_KEYWORDS) {
     if (d.includes(keyword)) {
-      return { isPayment: false, isRentalCharge: false, isNonRentalCharge: true, category };
+      return {
+        isPayment: false,
+        isRentalCharge: false,
+        isNonRentalCharge: true,
+        isBalanceForward: false,
+        category,
+      };
     }
   }
 
@@ -123,19 +161,36 @@ export function classifyDescription(description: string): ClassifiedDescription 
   // This prevents "returned check charge" from being treated as a payment just because it contains "check".
   const isPayment = PAYMENT_KEYWORDS.some((k) => d.includes(k));
   if (isPayment) {
-    return { isPayment: true, isRentalCharge: false, isNonRentalCharge: false };
+    return {
+      isPayment: true,
+      isRentalCharge: false,
+      isNonRentalCharge: false,
+      isBalanceForward: false,
+    };
   }
 
   const hasRent = RENT_KEYWORDS.some((k) => d.includes(k));
   if (hasRent) {
     const overridden = RENT_OVERRIDE_NON_RENT.some((k) => d.includes(k));
     if (overridden) {
-      return { isPayment: false, isRentalCharge: false, isNonRentalCharge: true, category: 'other' };
+      return {
+        isPayment: false,
+        isRentalCharge: false,
+        isNonRentalCharge: true,
+        isBalanceForward: false,
+        category: 'other',
+      };
     }
-    return { isPayment: false, isRentalCharge: true, isNonRentalCharge: false, category: 'rent' };
+    return {
+      isPayment: false,
+      isRentalCharge: true,
+      isNonRentalCharge: false,
+      isBalanceForward: false,
+      category: 'rent',
+    };
   }
 
-  return { isPayment: false, isRentalCharge: false, isNonRentalCharge: false };
+  return { isPayment: false, isRentalCharge: false, isNonRentalCharge: false, isBalanceForward: false };
 }
 
 export function parseMoney(raw: string): number | null {
@@ -381,6 +436,13 @@ export function parseLedgerFromText(text: string): ParsedLedgerResult {
       credit = 0;
     }
 
+    // Balance-forward/opening-balance rows should be balance-only (no debit/credit).
+    // Many statements print these with a "billed" amount equal to the existing balance due.
+    if (cls.isBalanceForward) {
+      debit = 0;
+      credit = 0;
+    }
+
     // Determine isRental: prioritize charge code, then classification
     // CRITICAL: If description contains "BASE RENT" or "RENT" (not payment), it's rental
     let isRental: boolean | undefined;
@@ -443,6 +505,7 @@ export function chargesFromLedgerEntries(ledgerEntries: LedgerEntry[]): {
     if (debit <= 0) continue;
 
     const cls = classifyDescription(e.description);
+    if (cls.isBalanceForward) continue;
     if (cls.isPayment) continue;
 
     // Check if this is a rental charge

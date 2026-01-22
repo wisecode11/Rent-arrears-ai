@@ -43,6 +43,17 @@ TOTAL  234345.71  228609.66    5736.05
       `.trim(),
     },
     {
+      name: 'Balance-forward rows should NOT count as non-rental',
+      asOfDate: '2026-01-19',
+      text: `
+12/01/2015 BASE RENT 1525.00 4675.00
+12/01/2015 AIR CONDITIONER 10.00 4685.00
+12/02/2015 PAYMENT -1525.00 3160.00
+01/01/2016 YEAR STARTING BALANCE 2016 3160.00 3160.00
+01/01/2016 AIR CONDITIONER 10.00 3170.00
+      `.trim(),
+    },
+    {
       name: 'Issue Date cutoff (ignore future month entries)',
       asOfDate: '2026-01-03', // system date (should be ignored because issue date is present)
       issueDateISO: '2025-06-02',
@@ -94,12 +105,16 @@ Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
     };
 
     const processed = calculateFinalAmount(aiData, new Date(f.asOfDate));
+    const nonRentHasBalanceForward = nonRentalCharges.some((c) =>
+      c.description.toUpperCase().includes('YEAR STARTING BALANCE')
+    );
     return {
       name: f.name,
       asOfDate: f.asOfDate,
       ledgerEntries: parsed.ledgerEntries.length,
       rentalCharges: rentalCharges.length,
       nonRentalCharges: nonRentalCharges.length,
+      nonRentHasBalanceForward,
       sampleRental: rentalCharges.slice(0, 3),
       latestBalance: processed.latestBalance,
       lastZeroOrNegativeBalanceDate: processed.lastZeroOrNegativeBalanceDate,

@@ -392,8 +392,8 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
       description.toLowerCase().includes('reverse') ||
       charge < 0;
 
-    // Non-rental charges: only actual charges, not payments or credits
-    const isNonRental = !isRental && !isPayment && !isCredit && (
+    // Non-rental charges: only actual charges, not payments/credits, and NOT balance-forward/opening-balance rows.
+    const isNonRental = !isRental && !isPayment && !isCredit && !classified.isBalanceForward && (
       classified.isNonRentalCharge ||
       chgCode === 'latefee' ||
       chgCode === 'secdep' ||

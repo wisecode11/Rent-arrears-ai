@@ -247,7 +247,8 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
 
       // Payments/credits should not be counted here.
       const cls = classifyDescription(entry.description);
-      const isPaymentLike = cls.isPayment || (entry.credit ?? 0) > 0;
+      // Balance-forward/opening-balance rows should never be treated as charges.
+      const isPaymentLike = cls.isPayment || cls.isBalanceForward || (entry.credit ?? 0) > 0;
       if (isPaymentLike) continue;
 
       // Only exclude clear rent charges; everything else counts toward non-rent.
