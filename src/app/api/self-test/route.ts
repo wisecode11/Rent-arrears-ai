@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { parseLedgerFromText, chargesFromLedgerEntries } from '@/lib/ledger-parser';
+import { parsePDFTextDirectly } from '@/lib/huggingface-client';
 import { calculateFinalAmount } from '@/lib/business-logic';
 import type { HuggingFaceResponse } from '@/types';
 
@@ -128,7 +129,43 @@ Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
     };
   });
 
-  return NextResponse.json({ ok: true, results });
+  const tenantLedgerFixtures: Array<{ name: string; asOfDate: string; text: string }> = [
+    {
+      name: 'Tenant Ledger (supports 1-digit dates + negative balances + late fees)',
+      asOfDate: '2025-07-08',
+      text: `
+Tenants: Sarah Thomas
+Unit: 938 Eastern Parkway - 2A
+Property: 932-938 Eastern Parkway Residences, LLC - 932-938 Eastern Parkway Brooklyn, NY 11213
+Date Payer Description Charges Payments Balance
+0.00
+Starting Balance
+6/1/2020 Residential Rent - APT RENT 1,900.00 1,900.00
+6/22/2020 Shekinah Voisin Payment 950.00 950.00
+7/16/2023 Late Fees - Residential - Late Fee for Jul 2023 50.00 532.36
+9/20/2021 Shekinah Voisin Payment (Reference #DTZQ-3LYM) 16,150.00-3,800.00
+Total 6,421.96
+      `.trim(),
+    },
+  ];
+
+  const tenantLedgerResults = tenantLedgerFixtures.map((f) => {
+    const aiData = parsePDFTextDirectly(f.text);
+    const processed = calculateFinalAmount(aiData as HuggingFaceResponse, new Date(f.asOfDate));
+    return {
+      name: f.name,
+      asOfDate: f.asOfDate,
+      ledgerEntries: aiData.ledgerEntries?.length ?? 0,
+      rentalCharges: aiData.rentalCharges?.length ?? 0,
+      nonRentalCharges: aiData.nonRentalCharges?.length ?? 0,
+      lastZeroOrNegativeBalanceDate: processed.lastZeroOrNegativeBalanceDate,
+      latestBalance: processed.latestBalance,
+      totalNonRentalFromLastZero: processed.totalNonRentalFromLastZero,
+      sampleNonRent: (aiData.nonRentalCharges ?? []).slice(0, 3),
+    };
+  });
+
+  return NextResponse.json({ ok: true, results, tenantLedgerResults });
 }
 
 

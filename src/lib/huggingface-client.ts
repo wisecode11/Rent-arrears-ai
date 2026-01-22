@@ -4,11 +4,23 @@ import { chargesFromLedgerEntries, classifyDescription, parseLedgerFromText } fr
 function extractIssueDateISO(extractedText: string): string | undefined {
   // Common header: "Date: 04/25/2025"
   const m = extractedText.match(/\bDate:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i);
-  if (!m) return undefined;
-  const mm = m[1].padStart(2, '0');
-  const dd = m[2].padStart(2, '0');
-  const yyyy = m[3];
-  return `${yyyy}-${mm}-${dd}`;
+  if (m) {
+    const mm = m[1].padStart(2, '0');
+    const dd = m[2].padStart(2, '0');
+    const yyyy = m[3];
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // Tenant Ledger exports often have: "Created on 07/08/2025"
+  const c = extractedText.match(/\bCreated\s+on\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i);
+  if (c) {
+    const mm = c[1].padStart(2, '0');
+    const dd = c[2].padStart(2, '0');
+    const yyyy = c[3];
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  return undefined;
 }
 
 /**
@@ -517,6 +529,7 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
   const ledgerEntries: any[] = [];
   let finalBalance = 0;
   let openingBalance = 0;
+  let openingBalanceExplicit = false;
   
   // Find the header line: Date | Payer | Description | Charges | Payments | Balance
   let dataStartIndex = 0;
@@ -532,14 +545,51 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
   // Parse ledger entries
   // Format: MM/DD/YYYY  [Payer]  Description  [Charges]  [Payments]  Balance
   // Example: "06/01/2020    Residential Rent - June 2020    1,900.00        1,900.00"
-  const dateRegex = /(\d{2}\/\d{2}\/\d{4})/;
+  // Some exports use 1-digit month/day (e.g., 6/1/2020). Support both.
+  const dateRegex = /(\d{1,2}\/\d{1,2}\/\d{4})/;
   const moneyRegex = /([-]?\d{1,3}(?:,\d{3})*\.\d{2}|[-]?\d+\.\d{2})/g;
+
+  // Extract opening balance from a "Starting Balance" row if present (often has no date).
+  // Example:
+  //   0.00
+  //   Starting Balance
+  for (let i = 0; i < Math.min(lines.length, 80); i++) {
+    const upper = lines[i].toUpperCase();
+    if (!upper.includes('STARTING BALANCE')) continue;
+    const nums = lines[i].match(moneyRegex);
+    if (nums && nums.length > 0) {
+      const parsed = parseFloat(nums[0].replace(/,/g, ''));
+      if (!isNaN(parsed)) {
+        openingBalance = parsed;
+        openingBalanceExplicit = true;
+        break;
+      }
+    }
+    // Sometimes the amount is on the previous line (e.g., "0.00" then "Starting Balance")
+    if (i > 0) {
+      const prevNums = lines[i - 1].match(moneyRegex);
+      if (prevNums && prevNums.length > 0) {
+        const parsedPrev = parseFloat(prevNums[0].replace(/,/g, ''));
+        if (!isNaN(parsedPrev)) {
+          openingBalance = parsedPrev;
+          openingBalanceExplicit = true;
+          break;
+        }
+      }
+    }
+  }
   
   for (let i = dataStartIndex; i < lines.length; i++) {
     const line = lines[i].trim();
     
     // Skip page numbers, headers, and footer lines
-    if (line.match(/^(Page|Created on|\d+\s*\/\s*\d+)/i)) continue;
+    // IMPORTANT: Do NOT accidentally skip ledger rows like "6/1/2020 ...".
+    // Only skip true page markers like "1 / 8" (standalone), plus explicit header/footer labels.
+    if (line.match(/^Page\b/i)) continue;
+    if (line.match(/^Created on\b/i)) continue;
+    if (line.match(/^\d+\s*\/\s*\d+\s*$/)) continue;
+    if (line.toUpperCase().startsWith('TENANT LEDGER')) continue;
+    if (line.toUpperCase().startsWith('DATE PAYER DESCRIPTION')) continue;
     if (line.toUpperCase().startsWith('TOTAL')) {
       // Extract final balance from TOTAL line
       const numbers = line.match(moneyRegex);
@@ -547,7 +597,8 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
         const lastNumber = numbers[numbers.length - 1].replace(/,/g, '');
         const parsed = parseFloat(lastNumber);
         if (!isNaN(parsed)) {
-          finalBalance = Math.abs(parsed);
+          // Preserve sign (some ledgers show negative balances).
+          finalBalance = parsed;
           console.log('✅ Extracted final balance from TOTAL line:', finalBalance);
         }
       }
@@ -596,21 +647,27 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     // If we have 3 numbers: Charges, Payments, Balance
     // If we have 2 numbers: either Charges+Balance or Payments+Balance
     if (amounts.length >= 3) {
+      // Charges, Payments, Balance
       debit = Math.max(0, amounts[0]);
       credit = Math.max(0, amounts[1]);
     } else if (amounts.length === 2) {
       // Need to determine if first is charge or payment based on description
       const cls = classifyDescription(description);
-      if (cls.isPayment || description.toLowerCase().includes('payment') || description.toLowerCase().includes('ach')) {
+      // If the first amount is negative, treat it as a credit/adjustment (not a charge).
+      if (amounts[0] < 0) {
+        credit = Math.abs(amounts[0]);
+      } else if (cls.isPayment || description.toLowerCase().includes('payment') || description.toLowerCase().includes('ach')) {
         credit = Math.abs(amounts[0]);
       } else {
         debit = Math.abs(amounts[0]);
       }
     }
-    
-    // Track opening balance (first entry)
-    if (openingBalance === 0 && Math.abs(balance) > 0) {
-      openingBalance = balance;
+
+    // Track opening balance (best-effort):
+    // If we didn't see an explicit "Starting Balance", infer it from the first transaction:
+    // opening ≈ balance - debit + credit (i.e., prior balance before this row).
+    if (!openingBalanceExplicit && ledgerEntries.length === 0) {
+      openingBalance = balance - debit + credit;
     }
     
     // Update final balance (keep the latest)
@@ -709,7 +766,8 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
   };
 }
 
-function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
+// Exported for deterministic self-tests and debugging.
+export function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse {
   const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
   
   // Check if this is a "Tenant Ledger" format: Date | Payer | Description | Charges | Payments | Balance
