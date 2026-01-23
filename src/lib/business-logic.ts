@@ -153,20 +153,94 @@ function pickLatestBalanceEntryByDateRule(
     return cls.isPayment === true || (entry.credit ?? 0) > 0;
   };
 
-  const parseReferencedMonth = (description: string): { yy: number; mm0: number } | undefined => {
+  const parseReferencedDate = (description: string): Date | undefined => {
     const d = description ?? '';
-    // Common patterns:
-    // - "Late Fee (08/2025)"
-    // - "Late Fee 08/2025"
-    // - "Late Fee for 08/2025"
-    const m = d.match(/(?:\(|\b)(\d{1,2})\/(\d{4})(?:\)|\b)/);
-    if (!m) return undefined;
-    const mm = Number.parseInt(m[1], 10);
-    const yy = Number.parseInt(m[2], 10);
-    if (!Number.isFinite(mm) || !Number.isFinite(yy)) return undefined;
-    if (mm < 1 || mm > 12) return undefined;
-    return { yy, mm0: mm - 1 };
+
+    // Pattern A: (MM/YYYY) or MM/YYYY
+    const my = d.match(/(?:\(|\b)(\d{1,2})\/(\d{4})(?:\)|\b)/);
+    if (my) {
+      const mm = Number.parseInt(my[1], 10);
+      const yy = Number.parseInt(my[2], 10);
+      if (Number.isFinite(mm) && Number.isFinite(yy) && mm >= 1 && mm <= 12) {
+        const dt = new Date(yy, mm - 1, 1);
+        if (!Number.isNaN(dt.getTime())) return dt;
+      }
+    }
+
+    // Pattern B: "Mar 13, 2025" or "March 13, 2025" (optional time after)
+    const monthNames = '(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)';
+    // Allow ordinal suffix and ANY small punctuation between day and year (PDF text often mangles commas/spaces).
+    // Examples this should match:
+    // - "Mar 13, 2025"
+    // - "Mar 13 2025"
+    // - "Mar 13,2025"
+    // - "Mar 13. 2025"
+    const mdy = d.match(new RegExp(String.raw`\\b${monthNames}\\s+(\\d{1,2})(?:st|nd|rd|th)?\\D{0,4}(\\d{4})\\b`, 'i'));
+    if (mdy) {
+      const mon = mdy[1].toLowerCase().slice(0, 3);
+      const day = Number.parseInt(mdy[2], 10);
+      const yy = Number.parseInt(mdy[3], 10);
+      const map: Record<string, number> = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+      const mm0 = map[mon];
+      if (mm0 !== undefined && Number.isFinite(day) && day >= 1 && day <= 31 && Number.isFinite(yy)) {
+        const dt = new Date(yy, mm0, day);
+        if (!Number.isNaN(dt.getTime())) return dt;
+      }
+    }
+
+    // Pattern C: numeric date somewhere in the text (MM/DD/YYYY or MM.DD.YYYY). Take the first.
+    const num = d.match(/\b(\d{1,2})[\/\.](\d{1,2})[\/\.](\d{4})\b/);
+    if (num) {
+      const mm = Number.parseInt(num[1], 10);
+      const dd = Number.parseInt(num[2], 10);
+      const yy = Number.parseInt(num[3], 10);
+      if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+        const dt = new Date(yy, mm - 1, dd);
+        if (!Number.isNaN(dt.getTime())) return dt;
+      }
+    }
+
+    return undefined;
   };
+
+  const referencedMonthOf = (description: string): { yy: number; mm0: number } | undefined => {
+    const ref = parseReferencedDate(description);
+    if (!ref) return undefined;
+    return { yy: ref.getFullYear(), mm0: ref.getMonth() };
+  };
+
+  // OVERRIDE (client requirement):
+  // If there exists a non-rent, non-payment debit row posted AFTER the as-of/issue date that
+  // explicitly references an earlier service date/month (e.g. "Late Fee (08/2025)" posted on 09/01,
+  // or "Mar 13, 2025 ... Lockout" posted on 05/01), treat that row as driving the "current balance due".
+  // This matches your expectation that the ledger's running balance after that referenced charge should be
+  // used as the Latest Balance.
+  const postIssueBackdated = sortedNewest.find((entry) => {
+    if (isRentEntry(entry)) return false;
+    if (isPaymentEntry(entry)) return false;
+    if ((entry.debit ?? 0) <= 0) return false;
+
+    const postT = new Date(entry.date).getTime();
+    const issueT = asOfDate.getTime();
+    if (!(postT > issueT)) return false;
+    const daysAfter = (postT - issueT) / (1000 * 60 * 60 * 24);
+    if (daysAfter > 60) return false; // small window to avoid pulling far-future data
+
+    const ref = parseReferencedDate(entry.description ?? '');
+    if (ref) {
+      if (ref.getTime() > issueT) return false;
+    } else {
+      // Fallback: sometimes PDFs mangle punctuation enough that exact parsing fails.
+      // If we still see an obvious "Month Day Year" hint, treat it as a reference.
+      const desc = entry.description ?? '';
+      const hasMonthWord = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i.test(desc);
+      const hasYear = /\b(19|20)\d{2}\b/.test(desc);
+      const hasDay = /\b\d{1,2}\b/.test(desc);
+      if (!(hasMonthWord && hasYear && hasDay)) return false;
+    }
+
+    return true;
+  });
 
   // Some systems post a charge on next month's first day but label it for the prior month
   // (e.g., "Late Fee (08/2025)" on 09/01/2025). For "current balance due" we should treat
@@ -175,11 +249,36 @@ function pickLatestBalanceEntryByDateRule(
     if (!entry) return false;
     if (isRentEntry(entry)) return false;
     if (isPaymentEntry(entry)) return false;
-    const ref = parseReferencedMonth(entry.description ?? '');
+    const ref = referencedMonthOf(entry.description ?? '');
     if (!ref) return false;
     if (ref.yy !== yy || ref.mm0 !== mm0) return false;
     // Require a debit-like amount to avoid selecting neutral rows.
     if ((entry.debit ?? 0) <= 0) return false;
+    return true;
+  };
+
+  const isBackdatedNonRentRelevantToTargetMonth = (entry: LedgerEntry, yy: number, mm0: number): boolean => {
+    // Used when issue date is the asOfDate (we may allow a small number of post-issue rows).
+    if (!entry) return false;
+    if (isRentEntry(entry)) return false;
+    if (isPaymentEntry(entry)) return false;
+    if ((entry.debit ?? 0) <= 0) return false;
+
+    // Only consider rows posted AFTER the as-of date (issue date).
+    const postT = new Date(entry.date).getTime();
+    const issueT = asOfDate.getTime();
+    if (!(postT > issueT)) return false;
+    const daysAfter = (postT - issueT) / (1000 * 60 * 60 * 24);
+    if (daysAfter > 45) return false;
+
+    const ref = parseReferencedDate(entry.description ?? '');
+    if (!ref) return false;
+    // Reference month must be <= target month.
+    const refKey = ref.getFullYear() * 12 + ref.getMonth();
+    const targetKey = yy * 12 + mm0;
+    if (refKey > targetKey) return false;
+    // Reference date must not be after asOfDate.
+    if (ref.getTime() > issueT) return false;
     return true;
   };
 
@@ -194,9 +293,15 @@ function pickLatestBalanceEntryByDateRule(
     return sortedNewest.find((entry) => {
       const d = new Date(entry.date);
       const inCalendarMonth = d.getFullYear() === yy && d.getMonth() === mm0;
+      // IMPORTANT: Payments DO affect the running balance due.
+      // If the latest activity in the target month is a payment (e.g. a subsidy/ACH check),
+      // we must allow that row to drive the "Latest Balance".
       if (inCalendarMonth && !isRentEntry(entry)) return true;
       // Backdated non-rent posted later but explicitly references this month.
-      return isBackdatedNonRentForMonth(entry, yy, mm0);
+      if (isBackdatedNonRentForMonth(entry, yy, mm0)) return true;
+      // Backdated non-rent posted later that references an earlier date/month (e.g. "Mar 13, 2025 ...")
+      // — treat it as contributing to the target month's "current balance due".
+      return isBackdatedNonRentRelevantToTargetMonth(entry, yy, mm0);
     });
   };
   const findLatestAnyInMonth = (yy: number, mm0: number): LedgerEntry | undefined => {
@@ -212,6 +317,21 @@ function pickLatestBalanceEntryByDateRule(
   let selected: LedgerEntry | undefined;
   let skippedEmptyMonths = 0;
   let usedRentOnlyMonth = false;
+
+  // If we found a post-issue backdated non-rent row, use it directly.
+  if (postIssueBackdated) {
+    const targetMonthISO = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
+    const ref = parseReferencedDate(postIssueBackdated.description ?? '');
+    const refLabel = ref
+      ? `${ref.getFullYear()}-${String(ref.getMonth() + 1).padStart(2, '0')}-${String(ref.getDate()).padStart(2, '0')}`
+      : 'unknown';
+    return {
+      rule: usePrevMonth ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+',
+      targetMonthISO,
+      selected: postIssueBackdated,
+      note: `Used post-issue backdated non-rent row (${postIssueBackdated.date}) referencing ${refLabel} for latest balance.`,
+    };
+  }
 
   for (let guard = 0; guard < 24; guard++) {
     const latestAny = findLatestAnyInMonth(targetYear, targetMonth);
@@ -239,9 +359,11 @@ function pickLatestBalanceEntryByDateRule(
     if (usedRentOnlyMonth) notes.push('Target month had only rent rows; used the latest rent balance for that month.');
     // Detect and note backdated non-rent selection (posting month != referenced month).
     const selD = new Date(selected.date);
-    const selRef = parseReferencedMonth(selected.description ?? '');
-    if (selRef && (selD.getFullYear() !== selRef.yy || selD.getMonth() !== selRef.mm0)) {
-      notes.push(`Used a backdated non-rent row posted on ${selected.date} that references ${String(selRef.mm0 + 1).padStart(2, '0')}/${selRef.yy}.`);
+    const selRefMonth = referencedMonthOf(selected.description ?? '');
+    if (selRefMonth && (selD.getFullYear() !== selRefMonth.yy || selD.getMonth() !== selRefMonth.mm0)) {
+      notes.push(
+        `Used a backdated non-rent row posted on ${selected.date} that references ${String(selRefMonth.mm0 + 1).padStart(2, '0')}/${selRefMonth.yy}.`
+      );
     }
     return {
       rule: usePrevMonth ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+',
@@ -443,57 +565,22 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       issueDateValid
         ? (() => {
             const issue = issueDateObj!;
-            const issueY = issue.getFullYear();
-            const issueM0 = issue.getMonth();
-            const parseReferencedMonth = (description: string): { yy: number; mm0: number } | undefined => {
-              const d = description ?? '';
-              const m = d.match(/(?:\(|\b)(\d{1,2})\/(\d{4})(?:\)|\b)/);
-              if (!m) return undefined;
-              const mm = Number.parseInt(m[1], 10);
-              const yy = Number.parseInt(m[2], 10);
-              if (!Number.isFinite(mm) || !Number.isFinite(yy)) return undefined;
-              if (mm < 1 || mm > 12) return undefined;
-              return { yy, mm0: mm - 1 };
-            };
             const isRentEntry = (entry: LedgerEntry): boolean => {
               if (entry.isRental === true) return true;
               const cls = classifyDescription(entry.description ?? '');
               return cls.isRentalCharge === true;
             };
-            const isPaymentEntry = (entry: LedgerEntry): boolean => {
-              const cls = classifyDescription(entry.description ?? '');
-              return cls.isPayment === true || (entry.credit ?? 0) > 0;
-            };
-            const allowBackdatedNonRentAfterIssueDate = (entry: LedgerEntry): boolean => {
-              // Only consider rows posted AFTER the issue date.
-              const t = new Date(entry.date).getTime();
-              const it = issue.getTime();
-              if (!(t > it)) return false;
-
-              // Keep this as a small grace window to avoid pulling in truly future months.
-              const daysAfter = (t - it) / (1000 * 60 * 60 * 24);
-              if (daysAfter > 45) return false;
-
-              // Must be a non-rent, non-payment debit.
-              if (isRentEntry(entry)) return false;
-              if (isPaymentEntry(entry)) return false;
-              if ((entry.debit ?? 0) <= 0) return false;
-
-              // Must explicitly reference the issue month (or earlier) like "(08/2025)".
-              const ref = parseReferencedMonth(entry.description ?? '');
-              if (!ref) return false;
-              // Allow if it references the SAME month as the issue date (common for late fees)
-              // or an earlier month (rare but safe within small grace window).
-              if (ref.yy > issueY) return false;
-              if (ref.yy === issueY && ref.mm0 > issueM0) return false;
-              return true;
-            };
-
+            // IMPORTANT:
+            // - We ONLY exclude future-dated RENT rows after the Issue Date.
+            // - We KEEP non-rent + payment rows after the Issue Date so Step 3 can still
+            //   select a "current balance due" that includes backdated non-rent charges
+            //   posted later (e.g., lockouts/latefees posted next month but referencing prior dates).
+            // The picker logic will decide whether those post-issue rows are relevant.
             return sortedLedgerEntries.filter((e) => {
               const t = new Date(e.date).getTime();
               const it = issue.getTime();
               if (t <= it) return true;
-              return allowBackdatedNonRentAfterIssueDate(e);
+              return !isRentEntry(e);
             });
           })()
         : sortedLedgerEntries;

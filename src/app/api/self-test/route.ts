@@ -109,6 +109,28 @@ Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
 09/01/2025  latefee  Late Fee (08/2025)  50.00  0.00  12081.73  2
       `.trim(),
     },
+    {
+      name: 'Issue Date cutoff: allow backdated non-rent posted after issue date with explicit date reference (Mar 13, 2025 ...)',
+      asOfDate: '2026-01-19',
+      issueDateISO: '2025-04-25',
+      text: `
+Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
+04/07/2025  keyinc  Feb 27, 2025 01:20:00 Lockout  50.00  0.00  7576.17  1
+05/01/2025  keyinc  Mar 13, 2025 22:30 PM Lockout  75.00  0.00  7826.17  2
+      `.trim(),
+    },
+    {
+      name: 'Issue Date: allow payment row within issue month to drive latest balance (04/25 payment reduces balance)',
+      asOfDate: '2026-01-19',
+      issueDateISO: '2025-04-28',
+      text: `
+Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
+04/01/2025  resid  Residential Rent (04/2025)  656.10  0.00  7256.03  1
+04/16/2025  latefees  Late Fees  50.00  0.00  7006.03  2
+04/25/2025  chk#  ACH Payment  0.00  2608.88  4397.15  3
+05/01/2025  resid  Residential Rent (05/2025)  743.77  0.00  5140.92  4
+      `.trim(),
+    },
   ];
 
   const results = fixtures.map((f) => {

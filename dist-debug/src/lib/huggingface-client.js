@@ -22,6 +22,8 @@ function extractIssueDateISO(extractedText) {
     };
     // Highest confidence: tenant-ledger exports often include this footer/header.
     addMatch(/\bCreated\s+on\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 100, full);
+    // Many statements show a top-right header like: "Printed 04/18/2025" (treat as issue/statement date).
+    addMatch(/\bPrinted[:\s]+(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 98, full);
     // Resident-ledger exports often include an explicit as-of date.
     addMatch(/\bAs\s*Of\s*Property\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 95, full);
     addMatch(/\bAs\s*Of\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 90, full);
