@@ -251,6 +251,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
 
   // Effective as-of date for Step 3:
   // - Prefer Issue Date when available (statement date).
+  // - Otherwise, if we have ledger entries, use the latest ledger transaction date (statement "as-of" proxy).
   // - Otherwise use runtime date (asOfDate param, typically today).
   const systemAsOfDateISO = asOfDate.toISOString().split('T')[0];
   const extractedIssueDateISO = aiData.issueDate;
@@ -275,7 +276,18 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   const issueDateISO = issueDateUsed ? extractedIssueDateISO : undefined;
   const issueDateObj = issueDateUsed ? extractedIssueDateObj : undefined;
   const issueDateValid = Boolean(issueDateUsed && issueDateObj && !Number.isNaN(issueDateObj.getTime()));
-  const effectiveAsOfDate = issueDateValid ? issueDateObj! : asOfDate;
+
+  const latestLedgerDateObj =
+    sortedLedgerEntries && sortedLedgerEntries.length > 0
+      ? new Date(sortedLedgerEntries[sortedLedgerEntries.length - 1].date)
+      : undefined;
+  const latestLedgerDateValid = Boolean(latestLedgerDateObj && !Number.isNaN(latestLedgerDateObj.getTime()));
+
+  const effectiveAsOfDate = issueDateValid
+    ? issueDateObj!
+    : latestLedgerDateValid
+      ? latestLedgerDateObj!
+      : asOfDate;
   
   // Step 1: Find the last zero or negative balance
   // This finds the most recent date when balance was $0.00 or negative

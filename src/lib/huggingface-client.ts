@@ -24,6 +24,9 @@ function extractIssueDateISO(extractedText: string): string | undefined {
   // Highest confidence: tenant-ledger exports often include this footer/header.
   addMatch(/\bCreated\s+on\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 100, full);
 
+  // Many statements show a top-right header like: "Printed 04/18/2025" (treat as issue/statement date).
+  addMatch(/\bPrinted[:\s]+(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 98, full);
+
   // Resident-ledger exports often include an explicit as-of date.
   addMatch(/\bAs\s*Of\s*Property\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 95, full);
   addMatch(/\bAs\s*Of\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 90, full);
@@ -1267,7 +1270,59 @@ export function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse
   }
 
   // Generic ledger extraction (handles many different ledger layouts).
-  const { ledgerEntries } = parseLedgerFromText(extractedText);
+  // IMPORTANT: "Statement" PDFs often wrap the running balance onto the next line, e.g.:
+  //   07/01/2015  1 BASE RENT : 1525.00
+  //   1525.00
+  // If we don't coalesce these, ledgerEntries can come out empty/very small and Step 3 can't apply
+  // the (day 1–5 => previous month) rule.
+  const coalesceStatementLedgerLines = (text: string): string => {
+    const moneyToken = /\(?-?\$?(?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2}\)?/g;
+    const dateToken = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4})/;
+
+    const rawLines = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    const out: string[] = [];
+    for (let i = 0; i < rawLines.length; i++) {
+      let line = rawLines[i];
+      const hasDate = dateToken.test(line);
+      if (!hasDate) {
+        out.push(line);
+        continue;
+      }
+
+      const tokens = [...line.matchAll(moneyToken)].map((m) => m[0]);
+      // If this line has <2 money tokens, it might be a wrapped entry; pull in following money-only lines.
+      if (tokens.length < 2) {
+        let j = i + 1;
+        while (j < rawLines.length) {
+          const next = rawLines[j];
+          if (dateToken.test(next)) break; // next entry begins
+          const nextTokens = [...next.matchAll(moneyToken)].map((m) => m[0]);
+          if (nextTokens.length === 0) break; // not an amount line; stop
+          // Append the amount line and continue (handles cases where both billed+balance are split).
+          line = `${line} ${next}`.replace(/\s+/g, ' ').trim();
+          j++;
+          // If we now have enough money tokens to parse charge/payment/balance, stop.
+          const mergedTokens = [...line.matchAll(moneyToken)].map((m) => m[0]);
+          if (mergedTokens.length >= 2) break;
+        }
+        i = j - 1; // skip consumed lines
+      }
+
+      out.push(line);
+    }
+
+    return out.join('\n');
+  };
+
+  const normalizedForLedger = coalesceStatementLedgerLines(extractedText);
+  const { ledgerEntries: ledgerEntriesRaw } = parseLedgerFromText(extractedText);
+  const { ledgerEntries: ledgerEntriesCoalesced } = parseLedgerFromText(normalizedForLedger);
+  const ledgerEntries =
+    ledgerEntriesCoalesced.length > ledgerEntriesRaw.length ? ledgerEntriesCoalesced : ledgerEntriesRaw;
   const { rentalCharges, nonRentalCharges } = chargesFromLedgerEntries(ledgerEntries);
 
   // If opening balance is still unknown, use the first ledger balance (if available)

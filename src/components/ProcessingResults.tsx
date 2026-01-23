@@ -119,9 +119,14 @@ export default function ProcessingResults({
                   Last zero/negative balance: <span className="text-slate-200">{new Date(data.lastZeroOrNegativeBalanceDate).toLocaleDateString('en-US')}</span>
                 </p>
               )}
-              {!data.lastZeroOrNegativeBalanceDate && (
+              {!data.lastZeroOrNegativeBalanceDate && (data.ledgerEntries?.length ?? 0) === 0 && (
                 <p className="text-xs text-slate-400 mt-3 italic">
                   Using opening balance (ledger entries not available)
+                </p>
+              )}
+              {!data.lastZeroOrNegativeBalanceDate && (data.ledgerEntries?.length ?? 0) > 0 && (
+                <p className="text-xs text-slate-400 mt-3 italic">
+                  No zero/negative balance found; using ledger entries for latest balance
                 </p>
               )}
             </div>

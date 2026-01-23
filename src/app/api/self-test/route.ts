@@ -55,6 +55,19 @@ TOTAL  234345.71  228609.66    5736.05
       `.trim(),
     },
     {
+      name: 'No Issue Date: use latest ledger date for 1-5 rule (statement/charge-code layout, wrapped balance)',
+      asOfDate: '2026-01-19', // should be ignored because we use latest ledger date when issueDate is missing
+      text: `
+STATEMENT
+DATE DESCRIPTION AMOUNT AMOUNT BALANCE
+09/01/2025  1 BASE RENT : 1886.61
+5736.05
+09/09/2025     PAYMENT CH#:199        1886.61               3849.44
+10/01/2025  1 BASE RENT : 1886.61               5736.05
+TOTAL  234345.71  228609.66    5736.05
+      `.trim(),
+    },
+    {
       name: 'Issue Date cutoff (ignore future month entries)',
       asOfDate: '2026-01-03', // system date (should be ignored because issue date is present)
       issueDateISO: '2025-06-02',

@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["es2020"],
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "noEmitOnError": false,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "outDir": "dist-debug"
+  },
+  "include": ["src/lib/**/*.ts", "src/types/**/*.ts", "debug/**/*.ts"],
+  "exclude": ["node_modules", ".next", "src/app/**", "src/components/**"]
+}
+
+
