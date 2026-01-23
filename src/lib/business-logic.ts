@@ -98,9 +98,12 @@ function pickLatestBalanceEntryByDateRule(
     return cls.isRentalCharge === true;
   };
 
-  // Client requirement: If the "current/target month" latest balance row is a RENT charge,
-  // skip that month (go previous) and use the latest NON-RENT balance row instead.
-  // If there is a non-rent row in the month (late fee/nsf/utilities/payment/etc), we can use it.
+  // Preferred selection:
+  // - Pick the latest row in the target month.
+  // - If there is a non-rent row in that month, prefer the latest non-rent row (helps when ledgers
+  //   have many same-month lines and we want a balance after a non-rent event like a payment/fee).
+  // - If the month has entries but ALL are rent, still use the latest rent row (this matches
+  //   statement "current balance due" behavior and avoids stepping back to earlier months).
   const findLatestNonRentInMonth = (yy: number, mm0: number): LedgerEntry | undefined => {
     // sortedNewest already orders by (date desc, row order desc), so first match is the latest row.
     return sortedNewest.find((entry) => {
@@ -108,23 +111,29 @@ function pickLatestBalanceEntryByDateRule(
       return d.getFullYear() === yy && d.getMonth() === mm0 && !isRentEntry(entry);
     });
   };
+  const findLatestAnyInMonth = (yy: number, mm0: number): LedgerEntry | undefined => {
+    return sortedNewest.find((entry) => {
+      const d = new Date(entry.date);
+      return d.getFullYear() === yy && d.getMonth() === mm0;
+    });
+  };
 
-  // Try the target month first; if it has only rent rows, step back month-by-month (max 24 months).
+  // Try the target month first; if no entries exist for that month, step back month-by-month (max 24 months).
   let targetMonth = initialTargetMonth;
   let targetYear = initialTargetYear;
   let selected: LedgerEntry | undefined;
-  let skippedRentOnlyMonths = 0;
+  let skippedEmptyMonths = 0;
+  let usedRentOnlyMonth = false;
 
   for (let guard = 0; guard < 24; guard++) {
-    selected = findLatestNonRentInMonth(targetYear, targetMonth);
-    if (selected) break;
-
-    // If there are entries in this month but all are rent, record and step back.
-    const monthHasAny = sortedNewest.some((e) => {
-      const d = new Date(e.date);
-      return d.getFullYear() === targetYear && d.getMonth() === targetMonth;
-    });
-    if (monthHasAny) skippedRentOnlyMonths++;
+    const latestAny = findLatestAnyInMonth(targetYear, targetMonth);
+    if (latestAny) {
+      const latestNonRent = findLatestNonRentInMonth(targetYear, targetMonth);
+      selected = latestNonRent ?? latestAny;
+      usedRentOnlyMonth = !latestNonRent && isRentEntry(latestAny);
+      break;
+    }
+    skippedEmptyMonths++;
 
     // Step back one month.
     targetMonth -= 1;
@@ -137,13 +146,14 @@ function pickLatestBalanceEntryByDateRule(
   const targetMonthISO = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
 
   if (selected) {
+    const notes: string[] = [];
+    if (skippedEmptyMonths > 0) notes.push(`Skipped ${skippedEmptyMonths} empty month(s) with no ledger rows.`);
+    if (usedRentOnlyMonth) notes.push('Target month had only rent rows; used the latest rent balance for that month.');
     return {
       rule: usePrevMonth ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+',
       targetMonthISO,
       selected,
-      note: skippedRentOnlyMonths > 0
-        ? `Skipped ${skippedRentOnlyMonths} month(s) because their latest balances were rent-only; used latest non-rent balance instead.`
-        : undefined,
+      note: notes.length ? notes.join(' ') : undefined,
     };
   }
 
