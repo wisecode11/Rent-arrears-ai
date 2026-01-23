@@ -134,6 +134,18 @@ function normalizeText(input: string): string {
 export function classifyDescription(description: string): ClassifiedDescription {
   const d = normalizeText(description);
 
+  // "Legal Rent" is still RENT (common wording in some tenant ledgers).
+  // Without this, the generic "legal" keyword would incorrectly classify it as legal fees (non-rental).
+  if (/legal\s*rent/.test(d)) {
+    return {
+      isPayment: false,
+      isRentalCharge: true,
+      isNonRentalCharge: false,
+      isBalanceForward: false,
+      category: 'rent',
+    };
+  }
+
   // Balance-forward/opening-balance rows are NOT charges.
   if (BALANCE_FORWARD_KEYWORDS.some((k) => d.includes(k))) {
     return {

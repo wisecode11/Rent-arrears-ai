@@ -549,6 +549,32 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
   const dateRegex = /(\d{1,2}\/\d{1,2}\/\d{4})/;
   const moneyRegex = /([-]?\d{1,3}(?:,\d{3})*\.\d{2}|[-]?\d+\.\d{2})/g;
 
+  // PDF text extraction sometimes concatenates tokens:
+  // - "... Aug 202450.00942.12" (year+amount+amount)
+  // - "Rent2,050.921,492.12" (missing spaces)
+  // - "1,400.00-558.80" (amount immediately followed by negative balance)
+  // We normalize these so amounts can be parsed correctly and descriptions don't contain numbers.
+  const normalizeLedgerLine = (input: string): string => {
+    let s = input;
+    // Split "YYYY50.00" or "YYYY2,050.92" -> "YYYY 50.00" / "YYYY 2,050.92"
+    // NOTE: do NOT require a trailing word-boundary; these are often immediately followed by another digit.
+    s = s.replace(/(\b\d{4})(-?\d{1,3}(?:,\d{3})*\.\d{2})/g, '$1 $2');
+    s = s.replace(/(\b\d{4})(-?\d+\.\d{2})/g, '$1 $2');
+    // Split "word-16,150.00" -> "word -16,150.00"
+    s = s.replace(/([A-Za-z])(-\d{1,3}(?:,\d{3})*\.\d{2})/g, '$1 $2');
+    s = s.replace(/([A-Za-z])(-\d+\.\d{2})/g, '$1 $2');
+    // Split "word2,050.92" -> "word 2,050.92"
+    s = s.replace(/([A-Za-z])(\d{1,3}(?:,\d{3})*\.\d{2})/g, '$1 $2');
+    s = s.replace(/([A-Za-z])(\d+\.\d{2})/g, '$1 $2');
+    // Split "...0.00-558.80" -> "...0.00 -558.80"
+    s = s.replace(/(\d\.\d{2})(-)/g, '$1 $2');
+    // Split "...50.00942.12" -> "...50.00 942.12"
+    s = s.replace(/(\d\.\d{2})(?=\d)/g, '$1 ');
+    // Some extractors can split a currency like "532.36" into "53 2.36"; merge back.
+    s = s.replace(/(\b\d{1,3})\s(\d\.\d{2}\b)/g, '$1$2');
+    return s;
+  };
+
   // Extract opening balance from a "Starting Balance" row if present (often has no date).
   // Example:
   //   0.00
@@ -580,7 +606,7 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
   }
   
   for (let i = dataStartIndex; i < lines.length; i++) {
-    const line = lines[i].trim();
+    const line = normalizeLedgerLine(lines[i].trim());
     
     // Skip page numbers, headers, and footer lines
     // IMPORTANT: Do NOT accidentally skip ledger rows like "6/1/2020 ...".
@@ -627,15 +653,19 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     const afterDate = line.substring(line.indexOf(dateStr) + dateStr.length).trim();
     
     // Find the first money amount position
-    const firstAmountMatch = afterDate.match(moneyRegex);
-    let description = afterDate;
-    if (firstAmountMatch && firstAmountMatch.index !== undefined) {
-      description = afterDate.substring(0, firstAmountMatch.index).trim();
-    }
+    // NOTE: Some runtimes can omit match indices; use indexOf on the matched text for robustness.
+    const firstMoney = [...afterDate.matchAll(moneyRegex)][0]?.[0];
+    const firstMoneyIdx = firstMoney ? afterDate.indexOf(firstMoney) : -1;
+    let description = firstMoneyIdx >= 0 ? afterDate.substring(0, firstMoneyIdx).trim() : afterDate;
     
     // Description might have payer name at the start (remove if it's a name pattern)
     // Pattern: "Sarah Thomas" or "Shekinah Voisin" followed by description
-    description = description.replace(/^([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+|$)/, '').trim();
+    // IMPORTANT: Only strip a payer name when it's followed by a payment keyword, otherwise we
+    // would mistakenly strip descriptions like "Residential Rent ...".
+    description = description.replace(
+      /^([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(?=(?:ACH\s+Payment|Credit\s+Card\s+Payment|Payment|EFT|Wire|Check|Chk)\b)/,
+      ''
+    ).trim();
     
     // Clean up description - remove extra spaces
     description = description.replace(/\s+/g, ' ').trim();

@@ -131,7 +131,7 @@ Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
 
   const tenantLedgerFixtures: Array<{ name: string; asOfDate: string; text: string }> = [
     {
-      name: 'Tenant Ledger (supports 1-digit dates + negative balances + late fees)',
+      name: 'Tenant Ledger (handles Legal Rent + concatenated amounts + negative balances)',
       asOfDate: '2025-07-08',
       text: `
 Tenants: Sarah Thomas
@@ -142,9 +142,30 @@ Date Payer Description Charges Payments Balance
 Starting Balance
 6/1/2020 Residential Rent - APT RENT 1,900.00 1,900.00
 6/22/2020 Shekinah Voisin Payment 950.00 950.00
-7/16/2023 Late Fees - Residential - Late Fee for Jul 2023 50.00 532.36
+7/26/2024 Sarah Thomas ACH Payment (Reference #7D01-5C50) 1,400.00-558.80
+8/1/2024 Residential Rent - August 2024 - Legal Rent2,050.921,492.12
+8/16/2024 Late Fees - Residential - Late Fee for Aug 202450.00942.12
+8/16/2024 Late Fees - Residential - August 2024 Late fees reversal-50.00892.12
 9/20/2021 Shekinah Voisin Payment (Reference #DTZQ-3LYM) 16,150.00-3,800.00
 Total 6,421.96
+      `.trim(),
+    },
+    {
+      name: 'Security deposit paid/zeroed => exclude deposit from non-rental',
+      asOfDate: '2025-04-18',
+      text: `
+Tenants: Test Tenant
+Unit: 302
+Property: 240 E 175TH STREET
+Date Payer Description Charges Payments Balance
+0.00
+Starting Balance
+1/1/2025 SECDEP SECURITY DEPOSIT 659.78 659.78
+1/21/2025 WASHING WASHING MACHINE 16.82 -16.82
+2/1/2025 RENT RENT 982.15 965.33
+2/19/2025 PAYMENT 1000.00 -34.67
+3/1/2025 SECDEP SECURITY DEPOSIT 0.00 0.00
+Total 0.00
       `.trim(),
     },
   ];
@@ -156,12 +177,16 @@ Total 6,421.96
       name: f.name,
       asOfDate: f.asOfDate,
       ledgerEntries: aiData.ledgerEntries?.length ?? 0,
-      rentalCharges: aiData.rentalCharges?.length ?? 0,
-      nonRentalCharges: aiData.nonRentalCharges?.length ?? 0,
+      // show both raw-parsed and processed counts (processed includes business-rule filters)
+      aiRentalCharges: aiData.rentalCharges?.length ?? 0,
+      aiNonRentalCharges: aiData.nonRentalCharges?.length ?? 0,
+      processedRentalCharges: processed.rentalCharges?.length ?? 0,
+      processedNonRentalCharges: processed.nonRentalCharges?.length ?? 0,
       lastZeroOrNegativeBalanceDate: processed.lastZeroOrNegativeBalanceDate,
       latestBalance: processed.latestBalance,
       totalNonRentalFromLastZero: processed.totalNonRentalFromLastZero,
-      sampleNonRent: (aiData.nonRentalCharges ?? []).slice(0, 3),
+      totalNonRental: processed.totalNonRental,
+      sampleNonRent: (processed.nonRentalCharges ?? []).slice(0, 3),
     };
   });
 

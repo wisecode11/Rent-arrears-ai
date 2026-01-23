@@ -1,6 +1,56 @@
 import { HuggingFaceResponse, ProcessedData, LedgerEntry, CalculationTrace, CalculationTraceNonRentItem } from '@/types';
 import { classifyDescription } from '@/lib/ledger-parser';
 
+function normalizeDesc(input: string): string {
+  return (input ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function isSecurityDepositLike(description: string): boolean {
+  const d = normalizeDesc(description);
+  if (d.includes('security deposit') || d.includes('security deposits') || d.includes('secdep')) return true;
+  const cls = classifyDescription(description ?? '');
+  return cls.category === 'security_deposit';
+}
+
+/**
+ * Heuristic: If a ledger shows multiple security-deposit-related rows and later evidence indicates the
+ * deposit was settled (e.g., refunded/reversed or explicitly zeroed), then we should treat that deposit
+ * as paid/settled and exclude it from non-rental totals.
+ *
+ * Why: security deposits are often tracked as a separate bucket and may be paid/cleared later; users
+ * don't want a previously-settled deposit inflating "non-rental charges".
+ */
+function shouldIgnoreSecurityDepositCharges(ledgerEntries: LedgerEntry[]): boolean {
+  if (!ledgerEntries || ledgerEntries.length === 0) return false;
+
+  const idxs: number[] = [];
+  for (let i = 0; i < ledgerEntries.length; i++) {
+    if (isSecurityDepositLike(ledgerEntries[i].description ?? '')) idxs.push(i);
+  }
+
+  // If only one deposit row exists, keep it (caller may still want to count it).
+  if (idxs.length < 2) return false;
+
+  const firstIdx = idxs[0];
+  for (const i of idxs) {
+    if (i <= firstIdx) continue;
+    const e = ledgerEntries[i];
+    const d = normalizeDesc(e.description ?? '');
+    const hasSettlementKeyword =
+      d.includes('refund') || d.includes('return') || d.includes('reversal') || d.includes('reversed') || d.includes('reclass');
+    const credit = e.credit ?? 0;
+    const debit = e.debit ?? 0;
+    const bal = e.balance ?? 0;
+    const explicitZeroed = debit === 0 && credit === 0 && bal === 0;
+
+    // Treat as settled if we see explicit reversal/refund/reclass wording, a credit on a deposit row,
+    // or an explicit "0" style deposit row.
+    if (hasSettlementKeyword || credit > 0 || explicitZeroed) return true;
+  }
+
+  return false;
+}
+
 /**
  * Apply core business logic for rental arrears calculation
  * Implements 4-step calculation rules:
@@ -176,19 +226,28 @@ function pickLatestBalanceEntryByDateRule(
 }
 
 export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date = new Date()): ProcessedData {
-  // Calculate total non-rental charges (ALL charges from beginning to end)
-  // Example: If there are charges from 2019 to 2025, this sums ALL of them
-  // This is the $8,675.00 shown as "Total non-rental charges"
-  const totalNonRental = aiData.nonRentalCharges.reduce(
-    (sum, charge) => sum + Math.abs(charge.amount), 
-    0
-  );
-
   // Stable ledger ordering for "from that point onward" logic
   const sortedLedgerEntries =
     aiData.ledgerEntries && aiData.ledgerEntries.length > 0
       ? [...aiData.ledgerEntries].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
       : undefined;
+
+  // If ledger indicates security deposits were settled, exclude them from non-rental totals/lists.
+  const ignoreSecurityDeposits = sortedLedgerEntries ? shouldIgnoreSecurityDepositCharges(sortedLedgerEntries) : false;
+  const filteredNonRentalCharges = ignoreSecurityDeposits
+    ? (aiData.nonRentalCharges ?? []).filter((c) => {
+        const desc = normalizeDesc(c.description ?? '');
+        return c.category !== 'security_deposit' && !desc.includes('security deposit') && !desc.includes('security deposits');
+      })
+    : aiData.nonRentalCharges;
+
+  // Calculate total non-rental charges (ALL charges from beginning to end)
+  // Example: If there are charges from 2019 to 2025, this sums ALL of them
+  // This is the $8,675.00 shown as "Total non-rental charges"
+  const totalNonRental = (filteredNonRentalCharges ?? []).reduce(
+    (sum, charge) => sum + Math.abs(charge.amount), 
+    0
+  );
 
   // Effective as-of date for Step 3:
   // - Prefer ledger "issueDate" if present.
@@ -265,6 +324,9 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       const isRentLike = entry.isRental === true || cls.isRentalCharge;
       if (isRentLike) continue;
 
+      // If security deposits were later settled, exclude them from non-rent totals.
+      if (ignoreSecurityDeposits && cls.category === 'security_deposit') continue;
+
       totalNonRentalFromLastZero += Math.abs(debit);
       nonRentItems.push({
         date: entry.date,
@@ -279,7 +341,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     nonRentMethod = 'date-only';
     nonRentNote = 'Ledger ordering unavailable; used date-only filter (inclusive).';
     const lastZeroDate = new Date(lastZeroOrNegativeBalanceDate);
-    const included = aiData.nonRentalCharges.filter((c) => c.date && new Date(c.date) >= lastZeroDate);
+    const included = (filteredNonRentalCharges ?? []).filter((c) => c.date && new Date(c.date) >= lastZeroDate);
     totalNonRentalFromLastZero = included.reduce((sum, c) => sum + Math.abs(c.amount), 0);
     nonRentItems = included.map((c) => ({
       date: c.date ?? lastZeroOrNegativeBalanceDate,
@@ -292,7 +354,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     nonRentMethod = 'all-nonrental-fallback';
     nonRentNote = 'No ledger entries / no last-zero date; using all non-rental charges.';
     totalNonRentalFromLastZero = totalNonRental;
-    nonRentItems = aiData.nonRentalCharges.map((c) => ({
+    nonRentItems = (filteredNonRentalCharges ?? []).map((c) => ({
       date: c.date ?? '',
       description: c.description,
       amount: Math.abs(c.amount),
@@ -310,7 +372,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   let step3SelectedEntry: CalculationTrace['step3']['selectedEntry'] | undefined;
   let step3Note: string | undefined;
   
-  console.log('💰 Balance extraction - Input data:', {
+  console.log('Balance extraction - Input data:', {
     finalBalance: aiData.finalBalance,
     openingBalance: aiData.openingBalance,
     ledgerEntriesCount: aiData.ledgerEntries?.length || 0
@@ -417,7 +479,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     period: aiData.period,
     openingBalance: aiData.openingBalance,
     rentalCharges: aiData.rentalCharges,
-    nonRentalCharges: aiData.nonRentalCharges,
+    nonRentalCharges: filteredNonRentalCharges ?? [],
     totalNonRental,
     finalRentalAmount,
     // New fields
