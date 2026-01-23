@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { parseLedgerFromText, chargesFromLedgerEntries } from '@/lib/ledger-parser';
-import { parsePDFTextDirectly } from '@/lib/huggingface-client';
+import { parsePDFTextDirectly, parseResidentLedgerFormat } from '@/lib/huggingface-client';
 import { calculateFinalAmount } from '@/lib/business-logic';
 import type { HuggingFaceResponse } from '@/types';
 
@@ -190,7 +190,62 @@ Total 0.00
     };
   });
 
-  return NextResponse.json({ ok: true, results, tenantLedgerResults });
+  const residentLedgerFixtures: Array<{ name: string; asOfDate: string; text: string }> = [
+    {
+      name: 'Resident Ledger (Bldg/Unit format) parses charges vs credits correctly',
+      asOfDate: '2025-07-09',
+      text: `
+Resident Ledger - As Of Property Date:  07/09/2025
+Bldg/UnitTransactionDateFiscalPeriodSubjournalCtrlTransactionCodeTransactionDescriptionDocChargesCreditsFlagBalance
+1769-14T07/01/2025072025RESIDENTRENTRent2,155.800.007,779.04
+1769-14T06/15/2025062025RESIDENTLATEFEELateCharges25.000.005,623.24
+1769-14T05/30/2025052025RESIDENT423PMTMORD654030.001,800.003,442.44
+1769-14T11/19/2024112024RESIDENTNSFFEENSFCheckFee025.000.003,238.66
+1769-14T11/30/2024112024RESIDENT431PMTOPACHWelcomeHomeACHPayment0.001,123.11-1,098.11
+      `.trim(),
+    },
+  ];
+
+  const residentLedgerResults = residentLedgerFixtures.map((f) => {
+    const aiData = parsePDFTextDirectly(f.text);
+    const residentDirect = parseResidentLedgerFormat(f.text);
+    const processed = calculateFinalAmount(aiData as HuggingFaceResponse, new Date(f.asOfDate));
+    const dateFiscalRow = /\d{1,2}\/\d{1,2}\/\d{4}\s*\d{6}(?=\D|$)/;
+    const allLines = f.text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    const residentLineCandidates = allLines.filter((l) => dateFiscalRow.test(l) && /RESIDENT/i.test(l)).length;
+    const sampleLine =
+      allLines.find((l) => /RESIDENT/i.test(l) && l.includes('/') && /\d{4}/.test(l)) ??
+      allLines.find((l) => /RESIDENT/i.test(l)) ??
+      allLines[0] ??
+      '';
+    return {
+      name: f.name,
+      asOfDate: f.asOfDate,
+      ledgerEntries: aiData.ledgerEntries?.length ?? 0,
+      aiRentalCharges: aiData.rentalCharges?.length ?? 0,
+      aiNonRentalCharges: aiData.nonRentalCharges?.length ?? 0,
+      processedNonRentalCharges: processed.nonRentalCharges?.length ?? 0,
+      debugLineCandidates: residentLineCandidates,
+      debugAllLinesHead: allLines.slice(0, 6),
+      debugSampleLine: sampleLine.slice(0, 120),
+      debugDateFiscalMatch: dateFiscalRow.test(sampleLine),
+      debugResidentDirect: {
+        ledgerEntries: residentDirect.ledgerEntries?.length ?? 0,
+        rentalCharges: residentDirect.rentalCharges?.length ?? 0,
+        nonRentalCharges: residentDirect.nonRentalCharges?.length ?? 0,
+      },
+      latestBalance: processed.latestBalance,
+      lastZeroOrNegativeBalanceDate: processed.lastZeroOrNegativeBalanceDate,
+      totalNonRentalFromLastZero: processed.totalNonRentalFromLastZero,
+      sampleNonRent: (processed.nonRentalCharges ?? []).slice(0, 5),
+      debugLedgerTail: (aiData.ledgerEntries ?? []).slice(-5),
+    };
+  });
+
+  return NextResponse.json({ ok: true, results, tenantLedgerResults, residentLedgerResults });
 }
 
 

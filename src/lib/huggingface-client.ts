@@ -2,25 +2,47 @@ import { HuggingFaceResponse } from '@/types';
 import { chargesFromLedgerEntries, classifyDescription, parseLedgerFromText } from '@/lib/ledger-parser';
 
 function extractIssueDateISO(extractedText: string): string | undefined {
-  // Common header: "Date: 04/25/2025"
-  const m = extractedText.match(/\bDate:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i);
-  if (m) {
-    const mm = m[1].padStart(2, '0');
-    const dd = m[2].padStart(2, '0');
-    const yyyy = m[3];
-    return `${yyyy}-${mm}-${dd}`;
+  const toISO = (mm: string, dd: string, yyyy: string) =>
+    `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+
+  // We scan the full text for strong signals like "Created on" / "As Of Property Date",
+  // but keep the weak "Date:" signal restricted to the header-ish portion to avoid
+  // accidentally grabbing a transaction-row date.
+  const full = extractedText;
+  const head = extractedText.slice(0, 6000);
+
+  type Candidate = { iso: string; score: number };
+  const candidates: Candidate[] = [];
+
+  const addMatch = (re: RegExp, score: number, source: string) => {
+    const m = source.match(re);
+    if (!m) return;
+    const iso = toISO(m[1], m[2], m[3]);
+    candidates.push({ iso, score });
+  };
+
+  // Highest confidence: tenant-ledger exports often include this footer/header.
+  addMatch(/\bCreated\s+on\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 100, full);
+
+  // Resident-ledger exports often include an explicit as-of date.
+  addMatch(/\bAs\s*Of\s*Property\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 95, full);
+  addMatch(/\bAs\s*Of\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 90, full);
+
+  // Common report headers.
+  addMatch(/\bStatement\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 85, full);
+  addMatch(/\bReport\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 80, full);
+
+  // Lowest confidence: a plain "Date:" header. Only accept if it appears to be a report header
+  // (e.g., near the very top), not a ledger table.
+  const dateHeader = head.match(/(^|\n)\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i);
+  if (dateHeader) {
+    const iso = toISO(dateHeader[2], dateHeader[3], dateHeader[4]);
+    candidates.push({ iso, score: 60 });
   }
 
-  // Tenant Ledger exports often have: "Created on 07/08/2025"
-  const c = extractedText.match(/\bCreated\s+on\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i);
-  if (c) {
-    const mm = c[1].padStart(2, '0');
-    const dd = c[2].padStart(2, '0');
-    const yyyy = c[3];
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  return undefined;
+  if (!candidates.length) return undefined;
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0].iso;
 }
 
 /**
@@ -152,6 +174,12 @@ PDF TEXT TO ANALYZE:
 export function parseResidentLedgerFormat(extractedText: string): HuggingFaceResponse {
   const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
   const issueDate = extractIssueDateISO(extractedText);
+
+  // In many extractions, spaces disappear but the signature "MM/DD/YYYY" + "MMYYYY" (6 digits fiscal period)
+  // remains. Use this as a robust detector for the Bldg/Unit resident-ledger layout.
+  // IMPORTANT: do NOT use \b here because the fiscal period is often immediately followed by a letter
+  // (e.g. "...072025RESIDENT...") and digits+letters are both word-chars.
+  const DATE_FISCAL_ROW = /\d{1,2}\/\d{1,2}\/\d{4}\s*\d{6}(?=\D|$)/;
   
   // Extract tenant name
   let tenantName = 'Unknown Tenant';
@@ -196,6 +224,16 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
       break;
     }
   }
+
+  // Some "Resident Ledger" exports use a different layout:
+  // "Bldg/Unit Transaction Date Fiscal Period ... Charges Credits ... Balance"
+  // Those rows typically start with: "<unit> <MM/DD/YYYY> <MMYYYY> ..."
+  // If we don't detect this, we may fall back to a generic parser which can mis-read credits as charges.
+  const isBldgUnitResidentLedger =
+    lines.some((l) => /Bldg\/Unit/i.test(l) && /Transaction\s*Date/i.test(l) && /Charges/i.test(l) && /Credits/i.test(l) && /Balance/i.test(l)) ||
+    lines.some((l) => /Bldg\/Unit/i.test(l) && /Transaction\s*Date/i.test(l) && /Flag/i.test(l) && /Balance/i.test(l)) ||
+    // Fallback detector: any row-like line containing date+fiscal and "RESIDENT"
+    lines.some((l) => DATE_FISCAL_ROW.test(l) && /RESIDENT/i.test(l));
   
   // Parse each ledger entry
   // Format: Date | Chg Code | Description | Charge | Payment | Balance | Chg/Rec
@@ -224,6 +262,27 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     return isNaN(parsed) ? 0 : parsed;
   };
 
+  const normalizeBrokenDecimals = (input: string): string => {
+    let s = input;
+    // Merge "10,012.0\n0" -> "10,012.00" and "-1,098.1\n1" -> "-1,098.11"
+    s = s.replace(/(\d+\.\d)\s+(\d)\b/g, '$1$2');
+    // Ensure a space between adjacent money tokens like "1,123.11-1,098.11"
+    s = s.replace(/(\d\.\d{2})(-)(?=\d)/g, '$1 $2');
+    // Split adjacent money tokens that were concatenated without a separator:
+    // "654030.001,800.003,442.44" -> "654030.00 1,800.00 3,442.44"
+    s = s.replace(/(\d\.\d{2})(?=\d)/g, '$1 ');
+    // Some PDFs concatenate a 5+ digit control # with a following "0.00" (e.g. "65403" + "0.00" => "654030.00").
+    // Split it back so we don't treat the control number as part of the charge amount.
+    s = s.replace(/(\b\d{5,}?)(0\.\d{2}\b)/g, '$1 $2');
+    return s;
+  };
+
+  const extractTailMoneyTokens = (block: string): string[] => {
+    moneyTokenRegex.lastIndex = 0;
+    const normalized = normalizeBrokenDecimals(block);
+    return [...normalized.matchAll(moneyTokenRegex)].map((m) => m[0]);
+  };
+
   const stripTrailingColumns = (s: string): string => {
     let out = (s || '').trim();
     // Remove trailing control numbers (5+ digits).
@@ -239,6 +298,15 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
   // Coalesce wrapped ledger rows into logical blocks (keep newlines so we can
   // reliably use the LAST physical line for the charge/payment/balance columns).
   const coalescedLines: string[] = [];
+  // Some PDF extractions remove spaces between columns:
+  // "07/01/2025072025RESIDENTRENTRent2,155.800.007,779.04"
+  // So allow optional whitespace between date and the 6-digit fiscal period.
+  // Also allow no space between unit and date: "1769-14T07/01/2025..."
+  // We detect rows by locating a date immediately followed by the 6-digit fiscal period.
+  const DATE_FISCAL_REGEX = /(\d{1,2}\/\d{1,2}\/\d{4})\s*(\d{6})(?=\D|$)/;
+  const START_ROW_BLDGUNIT = /^\s*\S+.*\d{1,2}\/\d{1,2}\/\d{4}\s*\d{6}\b/;
+  const isBldgUnitRowStart = (s: string): boolean => DATE_FISCAL_ROW.test(s) && /RESIDENT/i.test(s);
+
   for (let i = dataStartIndex; i < lines.length; i++) {
     const raw = lines[i].trim();
 
@@ -248,7 +316,12 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
       continue;
     }
 
-    if (!DATE_PREFIX_REGEX.test(raw)) continue;
+    // Pick row start depending on ledger layout.
+    if (isBldgUnitResidentLedger) {
+      if (!isBldgUnitRowStart(raw)) continue;
+    } else {
+      if (!DATE_PREFIX_REGEX.test(raw)) continue;
+    }
 
     let buffer = raw;
     // Keep appending until we hit the next date-row. Do NOT stop early based on decimals,
@@ -261,7 +334,11 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
         i++;
         continue;
       }
-      if (DATE_PREFIX_REGEX.test(next)) break;
+      if (isBldgUnitResidentLedger) {
+        if (isBldgUnitRowStart(next)) break;
+      } else {
+        if (DATE_PREFIX_REGEX.test(next)) break;
+      }
       if (next.match(/^\d+\s*\/\s*\d+\s*$/)) break; // page "1 / 8"
       if (next.toUpperCase().includes('RESIDENT LEDGER')) break;
       if (next.toUpperCase().startsWith('TOTAL')) break;
@@ -284,24 +361,50 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     const headerLine = blockLines[0];
     const tailLine = blockLines[blockLines.length - 1];
 
-    const startMatch = headerLine.match(/^(\d{1,2}\/\d{1,2}\/\d{4})\s+(\S+)\s*(.*)$/);
-    if (!startMatch) continue;
+    let dateStr = '';
+    let headerRemainder = '';
+    let rawCode = '';
 
-    const dateStr = startMatch[1];
+    if (isBldgUnitResidentLedger) {
+      // Find date + fiscal period anywhere in the line (spaces may be missing).
+      const m = headerLine.match(DATE_FISCAL_REGEX);
+      if (!m) continue;
+      dateStr = m[1];
+      const fiscalWithMaybeSpaces = m[0];
+      const startIdx = headerLine.indexOf(fiscalWithMaybeSpaces) + fiscalWithMaybeSpaces.length;
+      const remainder = headerLine.slice(startIdx).trim();
+      // Keep remainder (may be space-less); stripTrailingColumns will remove tail money tokens/control# later.
+      headerRemainder = remainder;
+
+      // Detect transaction code robustly from remainder (works even without spaces).
+      const upper = remainder.toUpperCase();
+      const codeMatch = upper.match(/(PMTOPACH|PMTMORD|PMTCHECK|LATEFEE|NSFFEE|RENT|SECDEP|SECURITYDEPOSIT)/);
+      rawCode = (codeMatch?.[1] ?? '').trim();
+    } else {
+      const startMatch = headerLine.match(/^(\d{1,2}\/\d{1,2}\/\d{4})\s+(\S+)\s*(.*)$/);
+      if (!startMatch) continue;
+      dateStr = startMatch[1];
+      rawCode = startMatch[2];
+      headerRemainder = (startMatch[3] || '').trim();
+    }
+
     const [month, day, year] = dateStr.split('/');
     const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
 
     // Normalize charge code to match existing logic (e.g. "chk#" => "chk")
-    const rawCode = startMatch[2];
     const chgCode = rawCode.toLowerCase().replace(/[^a-z0-9]/g, '');
 
-    const headerRemainder = (startMatch[3] || '').trim();
-
-    // Extract trailing amounts from the LAST physical line of the block.
-    // This avoids accidentally treating meter readings/tax/usage decimals as the ledger columns.
-    // NOTE: moneyTokenRegex is global; reset lastIndex per iteration to avoid skipping matches.
-    moneyTokenRegex.lastIndex = 0;
-    const tailTokens = [...tailLine.matchAll(moneyTokenRegex)].map((m) => m[0]);
+    // Extract trailing amounts from the block.
+    // For many ledgers, the last physical line contains the charge/payment/balance columns,
+    // but some PDFs wrap/split those columns across multiple lines (or concatenate ctrl# + 0.00).
+    // So we extract from the entire block and then take the LAST 2-3 money tokens.
+    const allTokens = extractTailMoneyTokens(blockLines.join(' '));
+    const tailTokens =
+      allTokens.length >= 3
+        ? allTokens.slice(-3)
+        : allTokens.length >= 2
+          ? allTokens.slice(-2)
+          : allTokens;
     if (tailTokens.length < 2) continue;
 
     let charge = 0;
@@ -333,12 +436,48 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
       }
     }
 
+    // Extra safety: payment-like rows should never be counted as charges, even if we mis-parsed a control#.
+    const headerLower = headerLine.toLowerCase();
+    const paymentLike =
+      rawCode.toLowerCase().startsWith('pmt') ||
+      headerLower.includes('payment') ||
+      headerLower.includes('ach') ||
+      headerLower.includes('money order') ||
+      headerLower.includes('welcomehome');
+    if (paymentLike && charge > 0 && payment === 0) {
+      payment = Math.abs(charge);
+      charge = 0;
+    }
+
+    // Extra safety #2: If we somehow captured a giant control#/concatenation as charge (e.g. 654030.00),
+    // force it out. If there is a payment token, the row is definitely a credit row.
+    if (paymentLike && charge > 100000) {
+      if (payment > 0) {
+        charge = 0;
+      } else {
+        charge = 0;
+      }
+    }
+
+    // Extra safety #3: Payment-like row with 3 tokens but first token is huge => treat charges as 0.
+    if (paymentLike && payment > 0 && charge > 100000) {
+      charge = 0;
+    }
+
     // Build description from header remainder + any middle lines (exclude tail line).
     const middleLines = blockLines.slice(1, -1);
     let description =
       blockLines.length === 1
         ? stripTrailingColumns(headerRemainder)
         : `${headerRemainder} ${middleLines.join(' ')}`.replace(/\s+/g, ' ').trim();
+
+    // Add basic spacing back when extraction removed it (helps downstream classification/clean display).
+    // Example: "RESIDENT423PMTMORD" -> "RESIDENT 423 PMTMORD"
+    description = description
+      .replace(/([A-Za-z])(\d)/g, '$1 $2')
+      .replace(/(\d)([A-Za-z])/g, '$1 $2')
+      .replace(/\s+/g, ' ')
+      .trim();
 
     // Clean description - remove control numbers and Ctrl# references
     description = description
@@ -449,6 +588,100 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
         date: date,
         category: category
       });
+    }
+  }
+
+  // Last-resort: some extracted texts remove separators so aggressively that our coalescing logic
+  // can miss row boundaries. If this is clearly a Bldg/Unit resident ledger but we parsed nothing,
+  // do a simpler line-by-line pass using the Date+FiscalPeriod signature.
+  if (isBldgUnitResidentLedger && ledgerEntries.length === 0) {
+    for (const raw of lines) {
+      if (!DATE_FISCAL_ROW.test(raw) || !/RESIDENT/i.test(raw)) continue;
+
+      const m = raw.match(DATE_FISCAL_REGEX);
+      if (!m) continue;
+      const dateStr = m[1];
+      const [month, day, year] = dateStr.split('/');
+      const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+
+      const startIdx = raw.indexOf(m[0]) + m[0].length;
+      const remainder = raw.slice(startIdx).trim();
+      const upper = remainder.toUpperCase();
+      const codeMatch = upper.match(/(PMTOPACH|PMTMORD|PMTCHECK|LATEFEE|NSFFEE|RENT|SECDEP|SECURITYDEPOSIT)/);
+      const rawCode = (codeMatch?.[1] ?? '').trim();
+
+      const tokens = extractTailMoneyTokens(raw);
+      const tailTokens =
+        tokens.length >= 3 ? tokens.slice(-3) : tokens.length >= 2 ? tokens.slice(-2) : tokens;
+      if (tailTokens.length < 2) continue;
+
+      let charge = 0;
+      let payment = 0;
+      let balance = 0;
+      if (tailTokens.length >= 3) {
+        charge = parseAmount(tailTokens[0]);
+        payment = parseAmount(tailTokens[1]);
+        balance = parseAmount(tailTokens[2]);
+      } else {
+        const amt = parseAmount(tailTokens[0]);
+        balance = parseAmount(tailTokens[1]);
+        charge = Math.abs(amt);
+        payment = 0;
+      }
+
+      const headerLower = raw.toLowerCase();
+      const paymentLike =
+        rawCode.toLowerCase().startsWith('pmt') ||
+        headerLower.includes('payment') ||
+        headerLower.includes('ach') ||
+        headerLower.includes('money order') ||
+        headerLower.includes('welcomehome');
+      if (paymentLike && charge > 100000) charge = 0;
+
+      const debit = charge > 0 ? charge : 0;
+      const credit = payment > 0 ? payment : 0;
+
+      let description = stripTrailingColumns(remainder);
+      description = description
+        .replace(/([A-Za-z])(\d)/g, '$1 $2')
+        .replace(/(\d)([A-Za-z])/g, '$1 $2')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const cls = classifyDescription(description);
+      const isRental = rawCode.toLowerCase() === 'rent' || cls.isRentalCharge;
+      const isPayment = paymentLike || (credit > 0 && debit === 0);
+      if (!isPayment) {
+        ledgerEntries.push({
+          date,
+          description: description || 'Unknown',
+          debit,
+          credit,
+          balance,
+          isRental: isRental ? true : (cls.isNonRentalCharge ? false : undefined),
+        });
+      } else {
+        ledgerEntries.push({
+          date,
+          description: description || 'Payment',
+          debit: 0,
+          credit,
+          balance,
+          isRental: undefined,
+        });
+      }
+
+      if (isRental && debit > 0 && !isPayment) {
+        rentalCharges.push({ description: description || 'Unknown', amount: debit, date });
+      }
+      if (!isRental && !isPayment && debit > 0) {
+        nonRentalCharges.push({
+          description: description || 'Unknown',
+          amount: debit,
+          date,
+          category: cls.category && cls.category !== 'rent' ? cls.category : 'other',
+        });
+      }
     }
   }
   
@@ -824,7 +1057,11 @@ export function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse
     console.log('📋 Detected Resident Ledger format');
     const resident = parseResidentLedgerFormat(extractedText);
     // If resident parsing fails, fall back to the generic parser below.
-    if ((resident.ledgerEntries?.length ?? 0) >= 5) {
+    const hasResidentData =
+      (resident.ledgerEntries?.length ?? 0) > 0 ||
+      (resident.rentalCharges?.length ?? 0) > 0 ||
+      (resident.nonRentalCharges?.length ?? 0) > 0;
+    if (hasResidentData) {
       return resident;
     }
     console.log('⚠️ Resident Ledger parsing returned no/low entries; using generic parser fallback');

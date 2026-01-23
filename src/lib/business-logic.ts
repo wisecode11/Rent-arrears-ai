@@ -250,31 +250,32 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   );
 
   // Effective as-of date for Step 3:
-  // - Prefer ledger "issueDate" if present.
+  // - Prefer Issue Date when available (statement date).
   // - Otherwise use runtime date (asOfDate param, typically today).
   const systemAsOfDateISO = asOfDate.toISOString().split('T')[0];
-  const issueDateISO = aiData.issueDate;
-  const issueDateObj = issueDateISO ? new Date(issueDateISO) : undefined;
-  // Effective as-of date for Step 3:
-  // - Prefer Issue Date when available
-  // - BUT if the ledger contains entries after Issue Date (statement issued earlier),
-  //   we anchor the month-selection to the newest ledger date (so we don’t incorrectly jump to a prior month).
-  const issueDateValid = issueDateObj && !Number.isNaN(issueDateObj.getTime());
-  const newestLedgerDateObj =
-    sortedLedgerEntries && sortedLedgerEntries.length > 0
-      ? new Date(sortedLedgerEntries[sortedLedgerEntries.length - 1].date)
-      : undefined;
-  const newestLedgerValid = newestLedgerDateObj && !Number.isNaN(newestLedgerDateObj.getTime());
+  const extractedIssueDateISO = aiData.issueDate;
+  const extractedIssueDateObj = extractedIssueDateISO ? new Date(extractedIssueDateISO) : undefined;
+  const extractedIssueDateValid = extractedIssueDateObj && !Number.isNaN(extractedIssueDateObj.getTime());
 
-  const ledgerAfterIssue =
-    issueDateValid && newestLedgerValid && newestLedgerDateObj!.getTime() > issueDateObj!.getTime();
+  // Guardrail: sometimes a PDF parse accidentally treats a transaction-row date (e.g. a last-zero date)
+  // as the "issue date". If that happens, Step 3 will filter out newer ledger rows and incorrectly
+  // show a latest balance of $0.00. If the extracted issue date is *far* older than the newest ledger
+  // row, ignore it.
+  let issueDateUsed = Boolean(extractedIssueDateValid);
+  if (issueDateUsed && sortedLedgerEntries && sortedLedgerEntries.length > 0) {
+    const newestLedgerDateObj = new Date(sortedLedgerEntries[sortedLedgerEntries.length - 1].date);
+    const daysBehind = (newestLedgerDateObj.getTime() - extractedIssueDateObj!.getTime()) / (1000 * 60 * 60 * 24);
+    // Allow normal statement cutoffs (e.g. issue date in prior month while next-month rent appears),
+    // but reject obviously-wrong dates that are months/years behind the statement.
+    if (daysBehind > 120) {
+      issueDateUsed = false;
+    }
+  }
 
-  const effectiveAsOfDate =
-    ledgerAfterIssue
-      ? newestLedgerDateObj!
-      : issueDateValid
-        ? issueDateObj!
-        : asOfDate;
+  const issueDateISO = issueDateUsed ? extractedIssueDateISO : undefined;
+  const issueDateObj = issueDateUsed ? extractedIssueDateObj : undefined;
+  const issueDateValid = Boolean(issueDateUsed && issueDateObj && !Number.isNaN(issueDateObj.getTime()));
+  const effectiveAsOfDate = issueDateValid ? issueDateObj! : asOfDate;
   
   // Step 1: Find the last zero or negative balance
   // This finds the most recent date when balance was $0.00 or negative
@@ -379,19 +380,30 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   });
   
   if (sortedLedgerEntries && sortedLedgerEntries.length > 0) {
-    // If ledger extends beyond issue date, treat newest ledger month as the "current month"
-    // (do NOT apply 1-5 previous-month rule to the newest-ledger-date).
+    // CRITICAL: If we have an Issue Date, Step 3 must not use future-dated ledger rows.
+    // Many ledgers include next-month RENT rows even when the statement Issue Date is in the prior month.
+    // Example: Issue Date 04/28/2025 but a 05/01/2025 rent row exists. We must not pick that balance.
+    const step3LedgerEntries =
+      issueDateValid
+        ? sortedLedgerEntries.filter((e) => new Date(e.date).getTime() <= issueDateObj!.getTime())
+        : sortedLedgerEntries;
+
+    const omittedForIssueDate =
+      issueDateValid ? sortedLedgerEntries.length - step3LedgerEntries.length : 0;
+
+    // IMPORTANT: Step 3 should respect Issue Date when provided.
+    // If the ledger contains future rent rows (e.g., next month rent posted) we should not
+    // advance the "latest balance" month beyond the statement Issue Date.
     const picked = pickLatestBalanceEntryByDateRule(
-      sortedLedgerEntries,
+      step3LedgerEntries,
       effectiveAsOfDate,
-      { forceCurrentMonth: ledgerAfterIssue }
+      { forceCurrentMonth: false }
     );
     step3Rule = picked.rule;
     step3TargetMonthISO = picked.targetMonthISO;
     const noteParts: string[] = [];
-    if (ledgerAfterIssue) {
-      noteParts.push(`Ledger has entries after Issue Date (${issueDateISO}); anchored month rule to newest ledger date (${sortedLedgerEntries[sortedLedgerEntries.length - 1].date}).`);
-      noteParts.push('Because of this, we treated the newest ledger month as the current month (skipped the 1–5 previous-month rule for that month).');
+    if (omittedForIssueDate > 0) {
+      noteParts.push(`Ignored ${omittedForIssueDate} future-dated ledger row(s) after Issue Date (${issueDateISO}) for latest-balance selection.`);
     }
     if (picked.note) noteParts.push(picked.note);
     step3Note = noteParts.length ? noteParts.join(' ') : undefined;
@@ -403,7 +415,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       };
       latestBalance = picked.selected.balance;
     } else {
-      latestBalance = pickLatestBalanceByDateRule(sortedLedgerEntries, effectiveAsOfDate);
+      latestBalance = pickLatestBalanceByDateRule(step3LedgerEntries, effectiveAsOfDate);
     }
     console.log('✅ Picked latest balance from ledger entries (date rule applied):', latestBalance);
   } else {
