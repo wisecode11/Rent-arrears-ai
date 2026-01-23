@@ -99,6 +99,16 @@ Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
 09/01/2025  latefee  Late Fee (08/2025)  50.00  0.00  1550.00  3
       `.trim(),
     },
+    {
+      name: 'Issue Date cutoff: allow backdated non-rent posted after issue date (Late Fee (08/2025) on 09/01)',
+      asOfDate: '2026-01-19',
+      issueDateISO: '2025-08-14',
+      text: `
+Date  Chg Code  Description  Charge  Payment  Balance  Chg/Rec
+08/01/2025  resid  Residential Rent (08/2025)  3399.00  0.00  12000.00  1
+09/01/2025  latefee  Late Fee (08/2025)  50.00  0.00  12081.73  2
+      `.trim(),
+    },
   ];
 
   const results = fixtures.map((f) => {
