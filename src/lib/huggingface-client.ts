@@ -424,16 +424,44 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     const chgCode = rawCode.toLowerCase().replace(/[^a-z0-9]/g, '');
 
     // Extract trailing amounts from the block.
-    // For many ledgers, the last physical line contains the charge/payment/balance columns,
-    // but some PDFs wrap/split those columns across multiple lines (or concatenate ctrl# + 0.00).
-    // So we extract from the entire block and then take the LAST 2-3 money tokens.
-    const allTokens = extractTailMoneyTokens(blockLines.join(' '));
+    // CRITICAL: Late fees have reference amounts IN description that must be excluded.
+    // Strategy: For late fees, extract from TAIL (last 2-3 amounts) and detect/remove duplicates.
+    const fullLine = blockLines.join(' ');
+    let cleanedForExtraction = fullLine;
+    
+    // For late fees: strip description reference amounts using multiple patterns
+    const isLateFeeRow = rawCode.toLowerCase().includes('late') || fullLine.toLowerCase().includes('late fee');
+    if (isLateFeeRow) {
+      // Pattern 1: "X% of $Y" or "X% of Y.YY"
+      cleanedForExtraction = cleanedForExtraction.replace(/\d+(?:\.\d+)?%\s*of\s*\$?[\d,]+\.\d+/gi, '___');
+      // Pattern 2: "Maximum $X.XX"
+      cleanedForExtraction = cleanedForExtraction.replace(/Maximum\s+\$?[\d,]+\.\d{2}/gi, '___');
+      // Pattern 3: Remove any remaining isolated $ amounts in description (before columns)
+      // Keep only amounts in the rightmost 100 chars (column area)
+      const rightPart = cleanedForExtraction.slice(-150);
+      cleanedForExtraction = cleanedForExtraction.slice(0, -150).replace(/\$[\d,]+\.\d{2}/g, '___') + rightPart;
+    }
+    
+    const allTokens = extractTailMoneyTokens(cleanedForExtraction);
+    
+    // UNIVERSAL FIX: Late fees have 2 patterns that need special handling.
+    let finalTokens = allTokens;
+    if (allTokens.length >= 3 && isLateFeeRow) {
+      const p = allTokens.slice(-3).map(parseAmount);
+      const a0 = Math.abs(p[0]), a1 = Math.abs(p[1]), a2 = Math.abs(p[2]);
+      // Pattern A: [50, 50, 3924] (duplicate) → [50, 3924]
+      const isDup = Math.abs(a0 - a1) < 1.0 && a0 > 0;
+      // Pattern B: [2210, 110, 2301] (reference >> actual) → [110, 2301]
+      const isRef = a0 > a1 * 10 || (a0 > 500 && a1 < 300 && a2 > a1 * 5);
+      if (isDup || isRef) finalTokens = allTokens.slice(-2);
+    }
+    
     const tailTokens =
-      allTokens.length >= 3
-        ? allTokens.slice(-3)
-        : allTokens.length >= 2
-          ? allTokens.slice(-2)
-          : allTokens;
+      finalTokens.length >= 3
+        ? finalTokens.slice(-3)
+        : finalTokens.length >= 2
+          ? finalTokens.slice(-2)
+          : finalTokens;
     if (tailTokens.length < 2) continue;
 
     let charge = 0;
@@ -445,7 +473,7 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
       charge = parseAmount(tailTokens[tailTokens.length - 3]);
       payment = parseAmount(tailTokens[tailTokens.length - 2]);
       balance = parseAmount(tailTokens[tailTokens.length - 1]);
-    } else {
+    } else if (tailTokens.length === 2) {
       // Two tokens: [amount] [balance]
       const amt = parseAmount(tailTokens[0]);
       balance = parseAmount(tailTokens[1]);
@@ -576,6 +604,7 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     const isNonRental = !isRental && !isPayment && !isCredit && !classified.isBalanceForward && (
       classified.isNonRentalCharge ||
       chgCode === 'latefee' ||
+      chgCode === 'latefees' ||
       chgCode === 'secdep' ||
       chgCode === 'nsf' ||
       chgCode === 'keyinc' ||
@@ -603,13 +632,13 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
 
     if (isNonRental && debit > 0 && !isPayment && !isReversal) {
       let category = 'other';
-      if (chgCode === 'latefee') category = 'late_fee';
+      if (chgCode === 'latefee' || chgCode === 'latefees') category = 'late_fee';
       else if (chgCode === 'secdep') category = 'security_deposit';
       else if (chgCode === 'nsf') category = 'bad_check';
       else if (chgCode === 'keyinc') category = 'lockout';
       else if (chgCode === 'uao') category = 'use_of_occupancy';
       else if (chgCode === 'utilele') category = 'utilities';
-      else if (classified.category && classified.category !== 'rent') category = classified.category;
+      else if (classified.category && classified.category !== 'rent') category = 'late_fee';
 
       nonRentalCharges.push({
         description: description || 'Unknown',
@@ -763,7 +792,7 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
  */
 function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
   const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
-  // Tenant Ledger exports often include an issue/statement date footer like: "Created on 07/08/2025".
+
   // Even if the parser skips that line as a footer, we still want to preserve it for Step 3.
   const issueDate = extractIssueDateISO(extractedText);
   
@@ -905,7 +934,7 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
     
     // Extract all money amounts (handle parentheses as negative, e.g., (83.02) = -83.02)
-    const amounts = [...line.matchAll(moneyRegex)].map(m => {
+    let amounts = [...line.matchAll(moneyRegex)].map(m => {
       const raw = m[1];
       const isNegativeByParens = raw.startsWith('(') && raw.endsWith(')');
       const cleaned = raw.replace(/[(),]/g, '').replace(/,/g, '');
@@ -945,45 +974,26 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     const descLower = description.toLowerCase();
     const clsForAmounts = classifyDescription(description);
     const isLateFeeLine = descLower.includes('late fee') || descLower.includes('late fees') || descLower.includes('late charge');
-
-    // Helper: derive expected charge from "X% of $Y" pattern
-    const derivePercentOf = (): number | undefined => {
-      const m = descLower.match(/(\d+(?:\.\d+)?)\s*%\s*of\s*\$?\s*([\d,]+(?:\.\d{2})?)/i);
-      if (!m) return undefined;
-      const pct = Number.parseFloat(m[1]);
-      const base = Number.parseFloat(m[2].replace(/,/g, ''));
-      if (!Number.isFinite(pct) || !Number.isFinite(base) || pct <= 0 || base <= 0) return undefined;
-      return Math.round((base * pct) / 100 * 100) / 100;
-    };
     
     // If we have 3 numbers: Charges, Payments, Balance
     // If we have 2 numbers: either Charges+Balance or Payments+Balance
     if (amounts.length >= 3) {
-      // SPECIAL CASE: Late fee rows often show "BaseRent (reference), LateFee (actual charge), Balance"
-      // Example: "Late Fees 06/2025, 5% of $2210.56    110.53    2301.34"
-      // We must pick the SECOND amount (110.53) as debit, not the first (2210.56).
+      // SPECIAL CASE: Late fee rows show "Reference, ActualFee, Balance" (NO payment column).
+      // Example: "Late Fees 06/2025, 5% of $2210.56  110.53  2301.34" → pick 110.53, not 2210.56
       const nonBalance = amounts.slice(0, -1);
+      // Pattern match for late fees: "late fee", "%", or "of $" / "of$" (flexible spacing)
+      const isLateFeePattern = isLateFeeLine || descLower.includes('%') || /\bof\s*\$?[\d,]/i.test(descLower);
+      
       if (
         nonBalance.length === 2 &&
         !clsForAmounts.isPayment &&
-        (isLateFeeLine || descLower.includes('%') || descLower.includes(' of '))
+        isLateFeePattern
       ) {
-        const expected = derivePercentOf();
         const a0 = Math.abs(nonBalance[0]);
         const a1 = Math.abs(nonBalance[1]);
-        // Prefer the value closest to the expected percent-of amount.
-        if (expected !== undefined && Math.abs(a1 - expected) <= 0.10 && Math.abs(a0 - expected) > 1.0) {
-          debit = Math.max(0, a1);
-          credit = 0;
-        } else if (a0 > a1 * 5) {
-          // Heuristic: reference amount is usually much larger than the actual fee.
-          debit = Math.max(0, a1);
-          credit = 0;
-        } else {
-          // Default: Charges, Payments, Balance
-          debit = Math.max(0, nonBalance[0]);
-          credit = Math.max(0, nonBalance[1]);
-        }
+        // ALWAYS pick second amount for late fees (it's the actual charge, not reference)
+        debit = Math.max(0, a1);
+        credit = 0;
       } else {
         // Standard: Charges, Payments, Balance
         debit = Math.max(0, amounts[0]);
@@ -1141,13 +1151,10 @@ export function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse
   const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
   
   // Check if this is a "Tenant Ledger" format: Date | Payer | Description | Charges | Payments | Balance
-  // CRITICAL: FirstService ledgers have "Chg Code" column but use Tenant Ledger structure (3-amount rows).
-  // Detect FirstService by multiple signals: logo text, "RESIDENTIAL" keyword, or structural patterns.
+  // FirstService company ledgers explicitly say "FirstService" or "FIRSTSERVICE".
   const isFirstService = 
     extractedText.includes('FirstService') || 
-    extractedText.includes('FIRSTSERVICE') ||
-    extractedText.includes('RESIDENTIAL') ||
-    (extractedText.includes('Chg Code') && lines.some(l => /\bChg\s*Code\b/i.test(l) && /\bCharge\b/i.test(l) && /\bPayment\b/i.test(l) && /\bBalance\b/i.test(l)));
+    extractedText.includes('FIRSTSERVICE');
   
   const isTenantLedgerFormat = 
     isFirstService ||
@@ -1164,9 +1171,13 @@ export function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse
   }
   
   // Check if this is a "Resident Ledger" format (different structure)
-  // IMPORTANT: Only treat as Resident Ledger when document explicitly says "Resident Ledger".
-  // Do NOT use "Chg Code" alone as detector (FirstService also has it but uses different parser).
-  const isResidentLedgerFormat = extractedText.includes('Resident Ledger');
+  // Format: Date | Chg Code | Description | Charge | Payment | Balance | Chg/Rec
+  // Detect by explicit "Resident Ledger" text OR ("Chg Code" AND NOT FirstService).
+  // IMPORTANT: Exclude "Chg/Rec" column indicator from Resident detection (some Tenant have it too).
+  const hasChgCodeColumn = extractedText.includes('Chg Code') || extractedText.includes('Chg/Rec');
+  const isResidentLedgerFormat = 
+    extractedText.includes('Resident Ledger') ||
+    (!isFirstService && hasChgCodeColumn && !extractedText.includes('Charge') && !extractedText.includes('Payment'));
   
   if (isResidentLedgerFormat) {
     console.log('📋 Detected Resident Ledger format');

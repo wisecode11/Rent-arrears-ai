@@ -365,13 +365,16 @@ export default function ProcessingResults({
               <div className="px-3 py-1.5 bg-orange-500/15 rounded-full border border-orange-400/20">
                 <span className="text-xs font-medium text-orange-200">
                   {(() => {
-                    // Filter charges after last zero date
+                    const step2Items = data.calculationTrace?.step2?.includedItems;
+                    if (Array.isArray(step2Items)) return `${step2Items.length} items`;
+
+                    // Fallback: date-only filter
                     const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
-                    const filteredCharges = data.nonRentalCharges.filter(charge => {
+                    const filtered = data.nonRentalCharges.filter((charge) => {
                       if (!charge.date) return false;
                       return new Date(charge.date) > lastZeroDate;
                     });
-                    return `${filteredCharges.length} items`;
+                    return `${filtered.length} items`;
                   })()}
                 </span>
               </div>
@@ -395,14 +398,33 @@ export default function ProcessingResults({
           </div>
           
           {(() => {
-            // Filter charges after last zero date
-            const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
-            const filteredCharges = data.nonRentalCharges.filter(charge => {
-              if (!charge.date) return false;
-              return new Date(charge.date) > lastZeroDate;
-            });
+            // SOURCE OF TRUTH: Use Step 2's ledger-order included items (not re-filtered nonRentalCharges).
+            // This ensures the listing matches the Step 2 total (avoids wrong amounts like late fee base vs actual).
+            const step2Items = data.calculationTrace?.step2?.includedItems;
+            const items = Array.isArray(step2Items)
+              ? step2Items.map((it) => ({
+                  description: it.description,
+                  amount: it.amount,
+                  date: it.date,
+                  category: it.category,
+                }))
+              : (() => {
+                  // Fallback: date-only filter on extracted nonRentalCharges (less accurate)
+                  const lastZeroDate = new Date(data.lastZeroOrNegativeBalanceDate);
+                  return data.nonRentalCharges
+                    .filter((charge) => {
+                      if (!charge.date) return false;
+                      return new Date(charge.date) > lastZeroDate;
+                    })
+                    .map((c) => ({
+                      description: c.description,
+                      amount: c.amount,
+                      date: c.date,
+                      category: c.category,
+                    }));
+                })();
 
-            if (filteredCharges.length === 0) {
+            if (items.length === 0) {
               return (
                 <div className="text-center py-12">
                   <div className="p-4 bg-white/5 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center ring-1 ring-white/10">
@@ -423,7 +445,7 @@ export default function ProcessingResults({
 
             return (
               <div id="nonrental-from-lastzero-list" className="space-y-4">
-                {filteredCharges.map((charge, index) => (
+                {items.map((charge, index) => (
                   <div
                     key={index}
                     className="group p-4 bg-white/5 hover:bg-white/7 rounded-xl border border-white/10 hover:border-white/20 transition-all duration-200"
