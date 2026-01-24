@@ -156,7 +156,20 @@ export function classifyDescription(description: string): ClassifiedDescription 
     };
   }
 
-  // Explicit non-rent keywords win.
+  // CRITICAL: Check payment keywords BEFORE non-rent keywords to avoid misclassifying credits.
+  // Example: "NSF receipt ... Uncollected Funds" is a PAYMENT (bounced check reversal), not a charge.
+  // Priority: receipt/reversal/refund wins over "nsf" keyword.
+  const isPayment = PAYMENT_KEYWORDS.some((k) => d.includes(k));
+  if (isPayment) {
+    return {
+      isPayment: true,
+      isRentalCharge: false,
+      isNonRentalCharge: false,
+      isBalanceForward: false,
+    };
+  }
+
+  // Explicit non-rent keywords (after payment check).
   for (const { keyword, category } of NON_RENT_KEYWORDS) {
     if (d.includes(keyword)) {
       return {
@@ -167,18 +180,6 @@ export function classifyDescription(description: string): ClassifiedDescription 
         category,
       };
     }
-  }
-
-  // Payment keywords AFTER explicit non-rent overrides.
-  // This prevents "returned check charge" from being treated as a payment just because it contains "check".
-  const isPayment = PAYMENT_KEYWORDS.some((k) => d.includes(k));
-  if (isPayment) {
-    return {
-      isPayment: true,
-      isRentalCharge: false,
-      isNonRentalCharge: false,
-      isBalanceForward: false,
-    };
   }
 
   const hasRent = RENT_KEYWORDS.some((k) => d.includes(k));

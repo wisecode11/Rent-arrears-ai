@@ -812,7 +812,8 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
   // Example: "06/01/2020    Residential Rent - June 2020    1,900.00        1,900.00"
   // Some exports use 1-digit month/day (e.g., 6/1/2020). Support both.
   const dateRegex = /(\d{1,2}\/\d{1,2}\/\d{4})/;
-  const moneyRegex = /([-]?\d{1,3}(?:,\d{3})*\.\d{2}|[-]?\d+\.\d{2})/g;
+  // Support: regular amounts, negatives (-123.45), and parentheses-style negatives (123.45)
+  const moneyRegex = /(\(?\-?\d{1,3}(?:,\d{3})*\.\d{2}\)?|\(?\-?\d+\.\d{2}\)?)/g;
 
   // PDF text extraction sometimes concatenates tokens:
   // - "... Aug 202450.00942.12" (year+amount+amount)
@@ -903,10 +904,13 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     const [month, day, year] = dateStr.split('/');
     const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
     
-    // Extract all money amounts
+    // Extract all money amounts (handle parentheses as negative, e.g., (83.02) = -83.02)
     const amounts = [...line.matchAll(moneyRegex)].map(m => {
-      const cleaned = m[1].replace(/,/g, '');
-      return parseFloat(cleaned);
+      const raw = m[1];
+      const isNegativeByParens = raw.startsWith('(') && raw.endsWith(')');
+      const cleaned = raw.replace(/[(),]/g, '').replace(/,/g, '');
+      const num = parseFloat(cleaned);
+      return isNegativeByParens ? -Math.abs(num) : num;
     }).filter(n => !isNaN(n));
     
     if (amounts.length === 0) continue;
@@ -938,16 +942,56 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     // Determine charges and payments
     let debit = 0;
     let credit = 0;
+    const descLower = description.toLowerCase();
+    const clsForAmounts = classifyDescription(description);
+    const isLateFeeLine = descLower.includes('late fee') || descLower.includes('late fees') || descLower.includes('late charge');
+
+    // Helper: derive expected charge from "X% of $Y" pattern
+    const derivePercentOf = (): number | undefined => {
+      const m = descLower.match(/(\d+(?:\.\d+)?)\s*%\s*of\s*\$?\s*([\d,]+(?:\.\d{2})?)/i);
+      if (!m) return undefined;
+      const pct = Number.parseFloat(m[1]);
+      const base = Number.parseFloat(m[2].replace(/,/g, ''));
+      if (!Number.isFinite(pct) || !Number.isFinite(base) || pct <= 0 || base <= 0) return undefined;
+      return Math.round((base * pct) / 100 * 100) / 100;
+    };
     
     // If we have 3 numbers: Charges, Payments, Balance
     // If we have 2 numbers: either Charges+Balance or Payments+Balance
     if (amounts.length >= 3) {
-      // Charges, Payments, Balance
-      debit = Math.max(0, amounts[0]);
-      credit = Math.max(0, amounts[1]);
+      // SPECIAL CASE: Late fee rows often show "BaseRent (reference), LateFee (actual charge), Balance"
+      // Example: "Late Fees 06/2025, 5% of $2210.56    110.53    2301.34"
+      // We must pick the SECOND amount (110.53) as debit, not the first (2210.56).
+      const nonBalance = amounts.slice(0, -1);
+      if (
+        nonBalance.length === 2 &&
+        !clsForAmounts.isPayment &&
+        (isLateFeeLine || descLower.includes('%') || descLower.includes(' of '))
+      ) {
+        const expected = derivePercentOf();
+        const a0 = Math.abs(nonBalance[0]);
+        const a1 = Math.abs(nonBalance[1]);
+        // Prefer the value closest to the expected percent-of amount.
+        if (expected !== undefined && Math.abs(a1 - expected) <= 0.10 && Math.abs(a0 - expected) > 1.0) {
+          debit = Math.max(0, a1);
+          credit = 0;
+        } else if (a0 > a1 * 5) {
+          // Heuristic: reference amount is usually much larger than the actual fee.
+          debit = Math.max(0, a1);
+          credit = 0;
+        } else {
+          // Default: Charges, Payments, Balance
+          debit = Math.max(0, nonBalance[0]);
+          credit = Math.max(0, nonBalance[1]);
+        }
+      } else {
+        // Standard: Charges, Payments, Balance
+        debit = Math.max(0, amounts[0]);
+        credit = Math.max(0, amounts[1]);
+      }
     } else if (amounts.length === 2) {
       // Need to determine if first is charge or payment based on description
-      const cls = classifyDescription(description);
+      const cls = clsForAmounts;
       // If the first amount is negative, treat it as a credit/adjustment (not a charge).
       if (amounts[0] < 0) {
         credit = Math.abs(amounts[0]);
@@ -994,10 +1038,11 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     }
     
     // Add to non-rental charges
-    // Include if: not rental, not payment, has debit, and is classified as non-rental OR has late fee keywords
+    // CRITICAL: Only include actual CHARGES (debit > 0), not payments/credits/refunds.
+    // Exclude: rental, payments (ACH/receipt/reversal), balance-forward rows.
     const isLateFee = description.toLowerCase().includes('late fee') || description.toLowerCase().includes('late fees');
     const isSecurityDeposit = description.toLowerCase().includes('security deposit');
-    const isNonRental = !isRental && !isPayment && debit > 0 && (
+    const isNonRental = !isRental && !isPayment && !classified.isBalanceForward && debit > 0 && (
       classified.isNonRentalCharge || 
       isLateFee || 
       isSecurityDeposit ||
@@ -1020,21 +1065,49 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     }
   }
   
+  // De-duplicate entries BEFORE sorting (same date + description + amount)
+  const dedupeKey = (date: string, desc: string, amt: number) => 
+    `${date}::${desc.toLowerCase().trim()}::${Math.round(amt * 100)}`;
+  
+  const seenLedger = new Set<string>();
+  const dedupedLedger = ledgerEntries.filter(e => {
+    const key = dedupeKey(e.date, e.description, e.balance);
+    if (seenLedger.has(key)) return false;
+    seenLedger.add(key);
+    return true;
+  });
+  
+  const seenRental = new Set<string>();
+  const dedupedRental = rentalCharges.filter((c: any) => {
+    const key = dedupeKey(c.date, c.description, c.amount);
+    if (seenRental.has(key)) return false;
+    seenRental.add(key);
+    return true;
+  });
+  
+  const seenNonRental = new Set<string>();
+  const dedupedNonRental = nonRentalCharges.filter((c: any) => {
+    const key = dedupeKey(c.date, c.description, c.amount);
+    if (seenNonRental.has(key)) return false;
+    seenNonRental.add(key);
+    return true;
+  });
+  
   // Sort by date
-  ledgerEntries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  rentalCharges.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  nonRentalCharges.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  dedupedLedger.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  dedupedRental.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  dedupedNonRental.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   
   // Final balance should be from the LAST entry (most recent) after sorting
-  if (ledgerEntries.length > 0) {
-    const lastEntry = ledgerEntries[ledgerEntries.length - 1];
+  if (dedupedLedger.length > 0) {
+    const lastEntry = dedupedLedger[dedupedLedger.length - 1];
     finalBalance = lastEntry.balance;
     console.log('Final balance from last entry:', finalBalance, 'Date:', lastEntry.date);
   }
   
   // If opening balance is 0, use first entry's balance
-  if (openingBalance === 0 && ledgerEntries.length > 0) {
-    openingBalance = ledgerEntries[0].balance;
+  if (openingBalance === 0 && dedupedLedger.length > 0) {
+    openingBalance = dedupedLedger[0].balance;
   }
   
   console.log('Tenant Ledger parsing complete:', {
@@ -1042,22 +1115,23 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     propertyName,
     finalBalance,
     openingBalance,
-    rentalCharges: rentalCharges.length,
-    nonRentalCharges: nonRentalCharges.length,
-    ledgerEntries: ledgerEntries.length
+    rentalCharges: dedupedRental.length,
+    nonRentalCharges: dedupedNonRental.length,
+    ledgerEntries: dedupedLedger.length,
+    duplicatesRemoved: (ledgerEntries.length - dedupedLedger.length) + (rentalCharges.length - dedupedRental.length) + (nonRentalCharges.length - dedupedNonRental.length)
   });
   
   return {
     tenantName,
     propertyName,
-    period: ledgerEntries.length > 0 
-      ? `${ledgerEntries[0].date} to ${ledgerEntries[ledgerEntries.length - 1].date}`
+    period: dedupedLedger.length > 0 
+      ? `${dedupedLedger[0].date} to ${dedupedLedger[dedupedLedger.length - 1].date}`
       : 'Extracted Period',
     openingBalance: openingBalance || finalBalance || 0,
     finalBalance: finalBalance || openingBalance || 0,
-    rentalCharges,
-    nonRentalCharges,
-    ledgerEntries,
+    rentalCharges: dedupedRental,
+    nonRentalCharges: dedupedNonRental,
+    ledgerEntries: dedupedLedger,
     issueDate,
   };
 }
@@ -1067,24 +1141,32 @@ export function parsePDFTextDirectly(extractedText: string): HuggingFaceResponse
   const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
   
   // Check if this is a "Tenant Ledger" format: Date | Payer | Description | Charges | Payments | Balance
-  const isTenantLedgerFormat = (extractedText.includes('Tenant Ledger') || 
-                                 extractedText.includes('Tenants:')) &&
-                                lines.some(line => {
-                                  const upper = line.toUpperCase();
-                                  return (upper.includes('DATE') && upper.includes('DESCRIPTION') && 
-                                         (upper.includes('CHARGES') || upper.includes('PAYMENTS') || upper.includes('BALANCE')));
-                                });
+  // CRITICAL: FirstService ledgers have "Chg Code" column but use Tenant Ledger structure (3-amount rows).
+  // Detect FirstService by multiple signals: logo text, "RESIDENTIAL" keyword, or structural patterns.
+  const isFirstService = 
+    extractedText.includes('FirstService') || 
+    extractedText.includes('FIRSTSERVICE') ||
+    extractedText.includes('RESIDENTIAL') ||
+    (extractedText.includes('Chg Code') && lines.some(l => /\bChg\s*Code\b/i.test(l) && /\bCharge\b/i.test(l) && /\bPayment\b/i.test(l) && /\bBalance\b/i.test(l)));
+  
+  const isTenantLedgerFormat = 
+    isFirstService ||
+    (extractedText.includes('Tenant Ledger') || extractedText.includes('Tenants:')) &&
+    lines.some(line => {
+      const upper = line.toUpperCase();
+      return (upper.includes('DATE') && upper.includes('DESCRIPTION') && 
+             (upper.includes('CHARGES') || upper.includes('PAYMENTS') || upper.includes('BALANCE')));
+    });
   
   if (isTenantLedgerFormat) {
-    console.log('📋 Detected Tenant Ledger format');
+    console.log('📋 Detected Tenant Ledger format' + (isFirstService ? ' (FirstService)' : ''));
     return parseTenantLedgerFormat(extractedText);
   }
   
   // Check if this is a "Resident Ledger" format (different structure)
-  // IMPORTANT: Many statement-style PDFs (like Fort Hamilton) have charge codes
-  // after the date (e.g., "07/01/2015 1 BASE RENT ...") but are NOT "Resident Ledger"
-  // tables. Only treat as Resident Ledger when the document explicitly indicates it.
-  const isResidentLedgerFormat = extractedText.includes('Resident Ledger') || extractedText.includes('Chg Code');
+  // IMPORTANT: Only treat as Resident Ledger when document explicitly says "Resident Ledger".
+  // Do NOT use "Chg Code" alone as detector (FirstService also has it but uses different parser).
+  const isResidentLedgerFormat = extractedText.includes('Resident Ledger');
   
   if (isResidentLedgerFormat) {
     console.log('📋 Detected Resident Ledger format');

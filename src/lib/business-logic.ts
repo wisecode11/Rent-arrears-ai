@@ -410,10 +410,11 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   // Calculate total non-rental charges (ALL charges from beginning to end)
   // Example: If there are charges from 2019 to 2025, this sums ALL of them
   // This is the $8,675.00 shown as "Total non-rental charges"
-  const totalNonRental = (filteredNonRentalCharges ?? []).reduce(
-    (sum, charge) => sum + Math.abs(charge.amount), 
-    0
-  );
+  // CRITICAL: Treat negative amounts as 0 (they represent credits/refunds, not charges).
+  const totalNonRental = (filteredNonRentalCharges ?? []).reduce((sum, charge) => {
+    const amt = typeof charge.amount === 'number' && !Number.isNaN(charge.amount) ? charge.amount : 0;
+    return sum + Math.max(0, amt);
+  }, 0);
 
   // Effective as-of date for Step 3:
   // - Prefer Issue Date when available (statement date).
@@ -506,11 +507,12 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       // If security deposits were later settled, exclude them from non-rent totals.
       if (ignoreSecurityDeposits && cls.category === 'security_deposit') continue;
 
-      totalNonRentalFromLastZero += Math.abs(debit);
+      // debit is already positive (>0 check above); add as-is without ABS.
+      totalNonRentalFromLastZero += debit;
       nonRentItems.push({
         date: entry.date,
         description: entry.description,
-        amount: Math.abs(debit),
+        amount: debit,
         category: cls.category && cls.category !== 'rent' ? cls.category : undefined,
         ledgerIndex: i,
       });
@@ -521,11 +523,14 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     nonRentNote = 'Ledger ordering unavailable; used date-only filter (inclusive).';
     const lastZeroDate = new Date(lastZeroOrNegativeBalanceDate);
     const included = (filteredNonRentalCharges ?? []).filter((c) => c.date && new Date(c.date) >= lastZeroDate);
-    totalNonRentalFromLastZero = included.reduce((sum, c) => sum + Math.abs(c.amount), 0);
+    totalNonRentalFromLastZero = included.reduce((sum, c) => {
+      const amt = typeof c.amount === 'number' && !Number.isNaN(c.amount) ? c.amount : 0;
+      return sum + Math.max(0, amt);
+    }, 0);
     nonRentItems = included.map((c) => ({
       date: c.date ?? lastZeroOrNegativeBalanceDate,
       description: c.description,
-      amount: Math.abs(c.amount),
+      amount: Math.max(0, typeof c.amount === 'number' && !Number.isNaN(c.amount) ? c.amount : 0),
       category: c.category,
     }));
   } else {
@@ -536,7 +541,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     nonRentItems = (filteredNonRentalCharges ?? []).map((c) => ({
       date: c.date ?? '',
       description: c.description,
-      amount: Math.abs(c.amount),
+      amount: Math.max(0, typeof c.amount === 'number' && !Number.isNaN(c.amount) ? c.amount : 0),
       category: c.category,
     }));
   }
@@ -638,9 +643,9 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   // FINAL: Always use the calculated latestBalance (which prioritizes finalBalance)
   const finalLatestBalance = latestBalance;
   
-  const finalTotalNonRentalFromLastZero = totalNonRentalFromLastZero > 0 
-    ? totalNonRentalFromLastZero 
-    : totalNonRental;
+  // CRITICAL: If Step 2 found ZERO non-rent charges after last-zero, DO NOT fallback to "all non-rental".
+  // Zero means zero. Fallback would incorrectly inflate charges from before the last-zero date.
+  const finalTotalNonRentalFromLastZero = totalNonRentalFromLastZero;
 
   const calculationTrace: CalculationTrace = {
     asOfDateISO: effectiveAsOfDate.toISOString().split('T')[0],
