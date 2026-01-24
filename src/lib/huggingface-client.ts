@@ -5,41 +5,67 @@ function extractIssueDateISO(extractedText: string): string | undefined {
   const toISO = (mm: string, dd: string, yyyy: string) =>
     `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
 
-  // We scan the full text for strong signals like "Created on" / "As Of Property Date",
-  // but keep the weak "Date:" signal restricted to the header-ish portion to avoid
-  // accidentally grabbing a transaction-row date.
+  // We scan the full text for strong signals like "Created on" / "As Of Property Date".
+  // For weaker generic labels like "Date:", we only accept them when they appear as a standalone
+  // header line (start-of-line "Date: ...") and we search both the top and bottom portions.
   const full = extractedText;
   const head = extractedText.slice(0, 6000);
+  const tail = extractedText.slice(Math.max(0, extractedText.length - 6000));
 
   type Candidate = { iso: string; score: number };
   const candidates: Candidate[] = [];
 
+  const normalizeYear = (yy: string): string => {
+    // Allow 2-digit years as well (assume 2000-2069 window for modern ledgers).
+    if (yy.length === 2) {
+      const n = Number.parseInt(yy, 10);
+      if (Number.isFinite(n)) return String(n >= 70 ? 1900 + n : 2000 + n);
+    }
+    return yy;
+  };
+
   const addMatch = (re: RegExp, score: number, source: string) => {
     const m = source.match(re);
     if (!m) return;
-    const iso = toISO(m[1], m[2], m[3]);
+    const iso = toISO(m[1], m[2], normalizeYear(m[3]));
     candidates.push({ iso, score });
   };
 
+  // Shared date token: MM/DD/YYYY, MM/DD/YY, MM-DD-YYYY, MM-DD-YY
+  const DATE_TOKEN = String.raw`(\d{1,2})[\/-](\d{1,2})[\/-](\d{2}|\d{4})`;
+  // Allow the date to be immediately followed by a non-space word (some PDF extractions drop the space),
+  // e.g. "Created on 07/08/2025Page 8". We only require that the next char is not a digit.
+  const DATE_FOLLOW = String.raw`(?=\D|$)`;
+
   // Highest confidence: tenant-ledger exports often include this footer/header.
-  addMatch(/\bCreated\s+on\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 100, full);
+  addMatch(new RegExp(String.raw`\bCreated\s+on[:\s]*${DATE_TOKEN}${DATE_FOLLOW}`, 'i'), 100, full);
+  addMatch(new RegExp(String.raw`\bCreated\s+On[:\s]*${DATE_TOKEN}${DATE_FOLLOW}`, 'i'), 100, full);
+  addMatch(new RegExp(String.raw`\bCreate(?:d)?\s*Date[:\s]*${DATE_TOKEN}${DATE_FOLLOW}`, 'i'), 98, full);
 
   // Many statements show a top-right header like: "Printed 04/18/2025" (treat as issue/statement date).
-  addMatch(/\bPrinted[:\s]+(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 98, full);
+  addMatch(new RegExp(String.raw`\bPrinted[:\s]+${DATE_TOKEN}${DATE_FOLLOW}`, 'i'), 98, full);
+  addMatch(new RegExp(String.raw`\bPrint\s*Date[:\s]+${DATE_TOKEN}${DATE_FOLLOW}`, 'i'), 97, full);
+  addMatch(new RegExp(String.raw`\bRun\s*Date[:\s]+${DATE_TOKEN}${DATE_FOLLOW}`, 'i'), 96, full);
 
   // Resident-ledger exports often include an explicit as-of date.
-  addMatch(/\bAs\s*Of\s*Property\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 95, full);
-  addMatch(/\bAs\s*Of\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 90, full);
+  addMatch(new RegExp(String.raw`\bAs\s*Of\s*Property\s*Date:\s*${DATE_TOKEN}${DATE_FOLLOW}`, 'i'), 95, full);
+  addMatch(new RegExp(String.raw`\bAs\s*Of\s*Date:\s*${DATE_TOKEN}${DATE_FOLLOW}`, 'i'), 90, full);
 
   // Common report headers.
-  addMatch(/\bStatement\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 85, full);
-  addMatch(/\bReport\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i, 80, full);
+  addMatch(new RegExp(String.raw`\bStatement\s*Date:\s*${DATE_TOKEN}${DATE_FOLLOW}`, 'i'), 85, full);
+  addMatch(new RegExp(String.raw`\bReport\s*Date:\s*${DATE_TOKEN}${DATE_FOLLOW}`, 'i'), 80, full);
 
   // Lowest confidence: a plain "Date:" header. Only accept if it appears to be a report header
-  // (e.g., near the very top), not a ledger table.
-  const dateHeader = head.match(/(^|\n)\s*Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i);
-  if (dateHeader) {
-    const iso = toISO(dateHeader[2], dateHeader[3], dateHeader[4]);
+  // (start-of-line "Date: ..."), not a ledger table.
+  const dateHeaderRe = new RegExp(String.raw`(^|\n)\s*Date:\s*${DATE_TOKEN}${DATE_FOLLOW}`, 'i');
+  const dateHeaderHead = head.match(dateHeaderRe);
+  if (dateHeaderHead) {
+    const iso = toISO(dateHeaderHead[2], dateHeaderHead[3], normalizeYear(dateHeaderHead[4]));
+    candidates.push({ iso, score: 60 });
+  }
+  const dateHeaderTail = tail.match(dateHeaderRe);
+  if (dateHeaderTail) {
+    const iso = toISO(dateHeaderTail[2], dateHeaderTail[3], normalizeYear(dateHeaderTail[4]));
     candidates.push({ iso, score: 60 });
   }
 
@@ -737,6 +763,9 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
  */
 function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
   const lines = extractedText.split('\n').filter(line => line.trim().length > 0);
+  // Tenant Ledger exports often include an issue/statement date footer like: "Created on 07/08/2025".
+  // Even if the parser skips that line as a footer, we still want to preserve it for Step 3.
+  const issueDate = extractIssueDateISO(extractedText);
   
   // Extract tenant name
   let tenantName = 'Unknown Tenant';
@@ -1028,7 +1057,8 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     finalBalance: finalBalance || openingBalance || 0,
     rentalCharges,
     nonRentalCharges,
-    ledgerEntries
+    ledgerEntries,
+    issueDate,
   };
 }
 
