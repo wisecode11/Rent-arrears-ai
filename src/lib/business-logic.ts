@@ -466,13 +466,19 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   if (sortedLedgerEntries && sortedLedgerEntries.length > 0) {
     // Find the most recent entry with zero or negative balance
     for (let i = sortedLedgerEntries.length - 1; i >= 0; i--) {
-      if (sortedLedgerEntries[i].balance <= 0) {
-        lastZeroOrNegativeBalanceDate = sortedLedgerEntries[i].date;
-        lastZeroOrNegativeBalance = sortedLedgerEntries[i].balance;
+      const entry = sortedLedgerEntries[i];
+      // Debug: Log entries with potential negative balances
+      if (entry.balance <= 0 || (entry.balance < 2000 && entry.date?.includes('2024-11'))) {
+        console.log('🔍 Checking balance:', { date: entry.date, balance: entry.balance, description: entry.description?.substring(0, 50) });
+      }
+      if (entry.balance <= 0) {
+        lastZeroOrNegativeBalanceDate = entry.date;
+        lastZeroOrNegativeBalance = entry.balance;
         lastZeroOrNegativeIndex = i;
         break;
       }
     }
+    console.log('🔍 Last zero/negative found:', { date: lastZeroOrNegativeBalanceDate, balance: lastZeroOrNegativeBalance, index: lastZeroOrNegativeIndex });
   }
   
   // Step 2: Add up non-rent charges from the last zero/negative balance point onward

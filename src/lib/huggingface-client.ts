@@ -246,9 +246,24 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
   let openingBalance = 0;
   
   // Find the header line to know where data starts
+  // Support multiple header formats:
+  // 1. "Date | Chg Code | ... | Balance" (standard Resident Ledger)
+  // 2. "Bldg/Unit | Transaction Date | ... | Transaction Code | ... | Balance" (Bldg/Unit format)
   let dataStartIndex = 0;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes('Date') && lines[i].includes('Chg Code') && lines[i].includes('Balance')) {
+    const line = lines[i];
+    // Standard format
+    if (line.includes('Date') && line.includes('Chg Code') && line.includes('Balance')) {
+      dataStartIndex = i + 1;
+      break;
+    }
+    // Bldg/Unit format
+    if (line.includes('Bldg/Unit') && line.includes('Transaction') && line.includes('Balance')) {
+      dataStartIndex = i + 1;
+      break;
+    }
+    // Alternative: look for "Charges" and "Credits" columns
+    if (line.includes('Charges') && line.includes('Credits') && line.includes('Balance')) {
       dataStartIndex = i + 1;
       break;
     }
@@ -263,6 +278,9 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     lines.some((l) => /Bldg\/Unit/i.test(l) && /Transaction\s*Date/i.test(l) && /Flag/i.test(l) && /Balance/i.test(l)) ||
     // Fallback detector: any row-like line containing date+fiscal and "RESIDENT"
     lines.some((l) => DATE_FISCAL_ROW.test(l) && /RESIDENT/i.test(l));
+  
+  console.log('🔍 Bldg/Unit format detected:', isBldgUnitResidentLedger);
+  console.log('🔍 Data start index:', dataStartIndex);
   
   // Parse each ledger entry
   // Format: Date | Chg Code | Description | Charge | Payment | Balance | Chg/Rec
@@ -300,6 +318,11 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     // Split adjacent money tokens that were concatenated without a separator:
     // "654030.001,800.003,442.44" -> "654030.00 1,800.00 3,442.44"
     s = s.replace(/(\d\.\d{2})(?=\d)/g, '$1 ');
+    // Handle Bldg/Unit format where amounts merge: "25.000." -> "25.00 0."
+    // Pattern: X.XX followed by 0. or more digits
+    s = s.replace(/(\d+\.\d{2})(0\.)(?=\d|$|\s)/g, '$1 $2');
+    // Also handle "25.000.00" -> "25.00 0.00"
+    s = s.replace(/(\d+\.\d{2})(\d+\.\d{2})/g, '$1 $2');
     // Some PDFs concatenate a 5+ digit control # with a following "0.00" (e.g. "65403" + "0.00" => "654030.00").
     // Split it back so we don't treat the control number as part of the charge amount.
     s = s.replace(/(\b\d{5,}?)(0\.\d{2}\b)/g, '$1 $2');
@@ -334,7 +357,16 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
   // We detect rows by locating a date immediately followed by the 6-digit fiscal period.
   const DATE_FISCAL_REGEX = /(\d{1,2}\/\d{1,2}\/\d{4})\s*(\d{6})(?=\D|$)/;
   const START_ROW_BLDGUNIT = /^\s*\S+.*\d{1,2}\/\d{1,2}\/\d{4}\s*\d{6}\b/;
-  const isBldgUnitRowStart = (s: string): boolean => DATE_FISCAL_ROW.test(s) && /RESIDENT/i.test(s);
+  // For Bldg/Unit format: detect rows that have date + 6-digit fiscal period
+  // Don't require "RESIDENT" as it may be missing or in a different column
+  const isBldgUnitRowStart = (s: string): boolean => {
+    // Must have date + 6-digit fiscal period pattern
+    if (!DATE_FISCAL_ROW.test(s)) return false;
+    // Either has RESIDENT or has known transaction codes
+    return /RESIDENT/i.test(s) || 
+           /LATEFEE|NSFFEE|PMTCHECK|PMTMORD|PMTOPACH|RENT\b|SECDEP/i.test(s) ||
+           /Late\s*Charge|NSF\s*Check/i.test(s);
+  };
 
   for (let i = dataStartIndex; i < lines.length; i++) {
     const raw = lines[i].trim();
@@ -407,8 +439,14 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
 
       // Detect transaction code robustly from remainder (works even without spaces).
       const upper = remainder.toUpperCase();
-      const codeMatch = upper.match(/(PMTOPACH|PMTMORD|PMTCHECK|LATEFEE|NSFFEE|RENT|SECDEP|SECURITYDEPOSIT)/);
+      // Extended list of transaction codes for Bldg/Unit format
+      const codeMatch = upper.match(/(PMTOPACH|PMTMORD|PMTCHECK|PMTMONEY|LATEFEE|LATEFEES|LATECHG|NSFFEE|NSF|RENT|SECDEP|SECURITYDEPOSIT)/);
       rawCode = (codeMatch?.[1] ?? '').trim();
+      
+      // If no code matched but description contains "Late Charges", treat as LATEFEE
+      if (!rawCode && (upper.includes('LATE CHARGE') || upper.includes('LATECHARGE'))) {
+        rawCode = 'LATEFEE';
+      }
     } else {
       const startMatch = headerLine.match(/^(\d{1,2}\/\d{1,2}\/\d{4})\s+(\S+)\s*(.*)$/);
       if (!startMatch) continue;
@@ -480,15 +518,28 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     
     const allTokens = extractTailMoneyTokens(cleanedForExtraction);
     
+    // Debug: Log PMTOPACH rows (ACH payments) to trace balance extraction
+    if (rawCode.toUpperCase().includes('PMTOPACH') || fullLine.toUpperCase().includes('PMTOPACH')) {
+      console.log('🔍 PMTOPACH row debug:', {
+        date: `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`,
+        rawCode,
+        fullLine: fullLine.substring(0, 200),
+        cleanedForExtraction: cleanedForExtraction.substring(cleanedForExtraction.length - 100),
+        allTokens,
+      });
+    }
+    
     // UNIVERSAL FIX: Late fees have 2 patterns that need special handling.
+    // BUT: Skip this for Bldg/Unit format where we have clean [charge, credit, balance] pattern
     let finalTokens = allTokens;
-    if (allTokens.length >= 3 && isLateFeeRow) {
+    if (allTokens.length >= 3 && isLateFeeRow && !isBldgUnitResidentLedger) {
       const p = allTokens.slice(-3).map(parseAmount);
       const a0 = Math.abs(p[0]), a1 = Math.abs(p[1]), a2 = Math.abs(p[2]);
       // Pattern A: [50, 50, 3924] (duplicate) → [50, 3924]
       const isDup = Math.abs(a0 - a1) < 1.0 && a0 > 0;
       // Pattern B: [2210, 110, 2301] (reference >> actual) → [110, 2301]
-      const isRef = a0 > a1 * 10 || (a0 > 500 && a1 < 300 && a2 > a1 * 5);
+      // But NOT when a1 is 0 (that's just the Credits column being empty)
+      const isRef = a1 > 0 && (a0 > a1 * 10 || (a0 > 500 && a1 < 300 && a2 > a1 * 5));
       if (isDup || isRef) finalTokens = allTokens.slice(-2);
     }
     
@@ -498,34 +549,105 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
         : finalTokens.length >= 2
           ? finalTokens.slice(-2)
           : finalTokens;
-    if (tailTokens.length < 2) continue;
-
+    
+    // Debug: Show what tokens were extracted for LATEFEE rows
+    if (rawCode.toLowerCase().includes('late') || fullLine.toLowerCase().includes('late')) {
+      console.log('🔍 LATEFEE tokens:', { allTokens, tailTokens, fullLineTail: fullLine.slice(-80) });
+    }
+    
     let charge = 0;
     let payment = 0;
     let balance = 0;
-
-    if (tailTokens.length >= 3) {
-      // Last three are: charge, payment, balance (resident ledger table columns)
-      charge = parseAmount(tailTokens[tailTokens.length - 3]);
-      payment = parseAmount(tailTokens[tailTokens.length - 2]);
-      balance = parseAmount(tailTokens[tailTokens.length - 1]);
-    } else if (tailTokens.length === 2) {
-      // Two tokens: [amount] [balance]
-      const amt = parseAmount(tailTokens[0]);
-      balance = parseAmount(tailTokens[1]);
-      const looksLikePayment =
-        chgCode === 'chk' ||
-        amt < 0 ||
-        headerLine.toLowerCase().includes('clickpay') ||
-        headerLine.toLowerCase().includes('ach') ||
-        headerLine.toLowerCase().includes('payment') ||
-        headerLine.toLowerCase().includes('chk#');
-      if (looksLikePayment) {
-        payment = Math.abs(amt);
-        charge = 0;
+    
+    // BLDG/UNIT FORMAT FIX: If we couldn't extract enough tokens, try parsing from the merged text
+    // Pattern like "25.000.007779.04" = charge(25.00) + credit(0.00) + balance(7779.04)
+    if (tailTokens.length < 2 && isBldgUnitResidentLedger) {
+      console.log('🔍 Merged text extraction attempt:', { tailTokensLen: tailTokens.length, fullLine: fullLine.slice(-100) });
+      // Try to extract amounts from the merged text using a different approach
+      // Look for pattern: XX.XXYY.YYZZZZ.ZZ (3 amounts merged)
+      const mergedPattern = fullLine.match(/(\d+\.\d{2})(\d+\.\d{2})(\d+,?\d*\.\d{2})\s*$/);
+      if (mergedPattern) {
+        charge = parseAmount(mergedPattern[1]);
+        payment = parseAmount(mergedPattern[2]);
+        balance = parseAmount(mergedPattern[3]);
       } else {
-        charge = Math.abs(amt);
-        payment = 0;
+        // Try 2-token pattern: XX.XXZZZZ.ZZ
+        const twoMerged = fullLine.match(/(\d+\.\d{2})(\d+,?\d*\.\d{2})\s*$/);
+        if (twoMerged) {
+          const amt = parseAmount(twoMerged[1]);
+          balance = parseAmount(twoMerged[2]);
+          // Determine if charge or payment based on code
+          if (rawCode.toLowerCase().startsWith('pmt')) {
+            payment = amt;
+          } else {
+            charge = amt;
+          }
+        } else {
+          continue;
+        }
+      }
+    } else if (tailTokens.length < 2) {
+      continue;
+    } else {
+      // Normal token-based extraction
+      if (tailTokens.length >= 3) {
+        // Last three are: charge, payment, balance (resident ledger table columns)
+        charge = parseAmount(tailTokens[tailTokens.length - 3]);
+        payment = parseAmount(tailTokens[tailTokens.length - 2]);
+        balance = parseAmount(tailTokens[tailTokens.length - 1]);
+      } else if (tailTokens.length === 2) {
+        // Two tokens: could be [charge, balance] or [charge, payment] (balance missing)
+        const amt0 = parseAmount(tailTokens[0]);
+        const amt1 = parseAmount(tailTokens[1]);
+        
+        // For payment-like rows (PMTOPACH, PMTMORD, etc.), the pattern is:
+        // [0.00 (charge), payment_amount] - balance is MISSING from PDF
+        const isPaymentRow =
+          rawCode.toLowerCase().startsWith('pmt') ||
+          chgCode === 'chk' ||
+          headerLine.toLowerCase().includes('clickpay') ||
+          headerLine.toLowerCase().includes('ach') ||
+          headerLine.toLowerCase().includes('payment') ||
+          headerLine.toLowerCase().includes('money order') ||
+          headerLine.toLowerCase().includes('chk#');
+        
+        if (isPaymentRow && amt0 === 0) {
+          // Pattern: [0.00, payment_amount] - balance is MISSING
+          // Calculate balance from previous entry: prevBalance - payment
+          charge = 0;
+          payment = Math.abs(amt1);
+          // Get previous entry's balance to calculate this entry's balance
+          const prevEntry = ledgerEntries.length > 0 ? ledgerEntries[ledgerEntries.length - 1] : null;
+          if (prevEntry && prevEntry.balance !== undefined) {
+            balance = prevEntry.balance - payment;
+            console.log('🔍 Calculated missing balance for payment row:', {
+              date: `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`,
+              prevBalance: prevEntry.balance,
+              payment,
+              calculatedBalance: balance
+            });
+          } else {
+            // Can't calculate - use amt1 as balance (fallback, may be wrong)
+            balance = amt1;
+          }
+        } else {
+          // Normal pattern: [amount, balance]
+          balance = amt1;
+          const looksLikePayment =
+            chgCode === 'chk' ||
+            amt0 < 0 ||
+            headerLine.toLowerCase().includes('clickpay') ||
+            headerLine.toLowerCase().includes('ach') ||
+            headerLine.toLowerCase().includes('payment') ||
+            headerLine.toLowerCase().includes('chk#');
+          if (looksLikePayment) {
+            payment = Math.abs(amt0);
+            charge = 0;
+          } else {
+            charge = Math.abs(amt0);
+            payment = 0;
+          }
+        }
       }
     }
 
@@ -635,6 +757,11 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
       description.toLowerCase().includes('reversed') ||
       description.toLowerCase().includes('reverse') ||
       charge < 0;
+
+    // Debug: Log LATEFEE rows
+    if (chgCode === 'latefee' || description.toLowerCase().includes('late')) {
+      console.log('🔍 LATEFEE row:', { date, chgCode, description, charge, debit, isRental, isPayment, isCredit, classifiedIsNonRental: classified.isNonRentalCharge });
+    }
 
     // Non-rental charges: only actual charges, not payments/credits, and NOT balance-forward/opening-balance rows.
     const isNonRental = !isRental && !isPayment && !isCredit && !classified.isBalanceForward && (
@@ -783,6 +910,34 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
   ledgerEntries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   rentalCharges.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   nonRentalCharges.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  
+  // Fix entries with missing/incorrect balances after sorting
+  // For payment rows where balance equals payment amount (likely missing balance from PDF),
+  // recalculate using: balance = prevBalance + debit - credit
+  for (let i = 1; i < ledgerEntries.length; i++) {
+    const entry = ledgerEntries[i];
+    const prevEntry = ledgerEntries[i - 1];
+    const isPaymentEntry = entry.credit > 0 && entry.debit === 0;
+    
+    // Detect suspicious balance: balance equals payment amount (likely missing balance)
+    // Or balance is positive when it should be negative after large payment
+    if (isPaymentEntry && entry.credit > 0 && prevEntry.balance !== undefined) {
+      const expectedBalance = prevEntry.balance + (entry.debit || 0) - (entry.credit || 0);
+      const currentBalanceMatchesPayment = Math.abs(entry.balance - entry.credit) < 0.01;
+      
+      // If current balance matches the payment amount, it was likely mis-parsed
+      if (currentBalanceMatchesPayment && Math.abs(expectedBalance - entry.balance) > 1) {
+        console.log('🔧 Fixing suspicious balance for payment entry:', {
+          date: entry.date,
+          prevBalance: prevEntry.balance,
+          payment: entry.credit,
+          oldBalance: entry.balance,
+          newBalance: expectedBalance
+        });
+        entry.balance = expectedBalance;
+      }
+    }
+  }
   
   // Final balance should be from the LAST entry (most recent) after sorting
   if (ledgerEntries.length > 0) {

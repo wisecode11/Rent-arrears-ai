@@ -90,11 +90,16 @@ const BALANCE_FORWARD_KEYWORDS = [
 
 const NON_RENT_KEYWORDS: Array<{ keyword: string; category: ChargeCategory }> = [
   { keyword: 'late fee', category: 'late_fee' },
+  { keyword: 'late fees', category: 'late_fee' },
   { keyword: 'late charge', category: 'late_fee' },
+  { keyword: 'late charges', category: 'late_fee' },
+  { keyword: 'latefee', category: 'late_fee' },
   { keyword: 'legal', category: 'legal_fees' },
   { keyword: 'attorney', category: 'legal_fees' },
   { keyword: 'court', category: 'legal_fees' },
   { keyword: 'nsf', category: 'bad_check' },
+  { keyword: 'nsf check fee', category: 'bad_check' },
+  { keyword: 'nsffee', category: 'bad_check' },
   { keyword: 'bad check', category: 'bad_check' },
   { keyword: 'returned check', category: 'bad_check' },
   { keyword: 'bounced check', category: 'bad_check' },
