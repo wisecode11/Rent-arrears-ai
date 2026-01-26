@@ -507,12 +507,12 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       // If security deposits were later settled, exclude them from non-rent totals.
       if (ignoreSecurityDeposits && cls.category === 'security_deposit') continue;
 
-      // debit is already positive (>0 check above); add as-is without ABS.
-      totalNonRentalFromLastZero += debit;
+      // Use Math.abs to ensure positive amount (matches old code behavior)
+      totalNonRentalFromLastZero += Math.abs(debit);
       nonRentItems.push({
         date: entry.date,
         description: entry.description,
-        amount: debit,
+        amount: Math.abs(debit),
         category: cls.category && cls.category !== 'rent' ? cls.category : undefined,
         ledgerIndex: i,
       });
