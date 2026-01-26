@@ -111,12 +111,88 @@ const RENT_OVERRIDE_NON_RENT = [
   'cable',
 ];
 
+// Comprehensive list of rental-related keywords and synonyms
+// These are all classified as RENTAL charges (not non-rental)
 const RENT_KEYWORDS = [
+  // Standard rent terms
   'base rent',
   'rent',
   'monthly rent',
   'rental charge',
+  'rental charges',
+  'rent charge',
+  'rent charges',
+  
+  // Affordable/subsidized housing terms
+  'affordable rent',
+  'affordable housing',
   'affrent',
+  'aff rent',
+  'subsidized rent',
+  'section 8 rent',
+  'hud rent',
+  'lihtc rent',
+  'tax credit rent',
+  
+  // Use and Occupancy (UAO) - common rental term
+  'use of occupancy',
+  'use and occupancy',
+  'uao',
+  'u&o',
+  'occupancy charge',
+  'occupancy fee',
+  
+  // Residential/housing rent
+  'residential rent',
+  'housing rent',
+  'dwelling rent',
+  'apartment rent',
+  'unit rent',
+  
+  // Legal rent terms
+  'legal rent',
+  'contract rent',
+  'lease rent',
+  'tenant rent',
+  'gross rent',
+  'net rent',
+  
+  // Prorated rent
+  'prorated rent',
+  'pro-rated rent',
+  'pro rated rent',
+  'partial rent',
+  
+  // Market rent
+  'market rent',
+  'fair market rent',
+  'fmr',
+  
+  // Other rental variations
+  'room rent',
+  'bed rent',
+  'lodging',
+  'tenancy',
+  'rent due',
+  'rent owed',
+  'rent payment',
+  'rent for',
+  
+  // Rent adjustments and true-ups (changes to rent amount)
+  'true up',
+  'trueup',
+  'true-up',
+  'rue up',  // typo variant seen in some ledgers
+  'rent adjustment',
+  'rent correction',
+  'rent updated',
+  'renewal presented',
+  'updated renewal',
+  
+  // Common codes
+  'resrent',
+  'res rent',
+  'resident rent',
 ];
 
 // Rows that represent a carry-forward/opening balance, not an actual charge.
@@ -159,16 +235,8 @@ const NON_RENT_KEYWORDS: Array<{ keyword: string; category: ChargeCategory }> = 
   { keyword: 'maintenance', category: 'maintenance' },
   { keyword: 'repair', category: 'maintenance' },
   { keyword: 'work order', category: 'maintenance' },
-  // Use and Occupancy charges (UAO) - common adjustment type
-  { keyword: 'use of occupancy', category: 'other' },
-  { keyword: 'use and occupancy', category: 'other' },
-  { keyword: 'true up', category: 'other' },
-  { keyword: 'trueup', category: 'other' },
-  { keyword: 'true-up', category: 'other' },
-  { keyword: 'rue up', category: 'other' },  // typo variant
-  { keyword: 'adjustment', category: 'other' },
-  { keyword: 'reposted', category: 'other' },
-  { keyword: 'wrong entry', category: 'other' },
+  // NOTE: Use and Occupancy (UAO) is classified as RENTAL, not non-rental
+  // True-up and adjustments for rent are also rental-related
   { keyword: 'water', category: 'utilities' },
   { keyword: 'sewer', category: 'utilities' },
   { keyword: 'trash', category: 'utilities' },
