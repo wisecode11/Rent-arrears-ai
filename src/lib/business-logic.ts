@@ -485,6 +485,14 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   let nonRentItems: CalculationTraceNonRentItem[] = [];
   let nonRentNote: string | undefined;
 
+  // Helper: Check if a security deposit charge has been paid
+  // SIMPLE: Just check if this entry has a credit/payment in the same row
+  const isSecurityDepositPaid = (depositEntry: LedgerEntry): boolean => {
+    // If the deposit entry itself has a credit/payment column value > 0, it's paid
+    const credit = depositEntry.credit ?? 0;
+    return credit > 0;
+  };
+
   // Preferred: ledger-order calculation (matches "from that point onward" even within the same date)
   // SIMPLE LOGIC: After last zero/negative, count ALL non-rental charges. Only filter security deposits and payments.
   if (typeof lastZeroOrNegativeIndex === 'number' && sortedLedgerEntries && sortedLedgerEntries.length > 0) {
@@ -506,8 +514,14 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       const isRentLike = entry.isRental === true || cls.isRentalCharge;
       if (isRentLike) continue;
 
-      // If security deposits were later settled, exclude them from non-rent totals.
-      if (ignoreSecurityDeposits && cls.category === 'security_deposit') continue;
+      // Security deposit logic: Only skip if it has been PAID (credit > 0 in same row)
+      // If charge exists but no payment in same row, ADD it to non-rental
+      if (cls.category === 'security_deposit') {
+        if (ignoreSecurityDeposits && isSecurityDepositPaid(entry)) {
+          continue; // Skip - deposit was paid
+        }
+        // If not paid, fall through and add to non-rental
+      }
 
       // COUNT EVERYTHING ELSE AS NON-RENTAL (late fees, NSF, utilities, etc.)
       totalNonRentalFromLastZero += Math.abs(debit);
