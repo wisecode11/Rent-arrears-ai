@@ -178,11 +178,7 @@ const RENT_KEYWORDS = [
   'rent payment',
   'rent for',
   
-  // Rent adjustments and true-ups (changes to rent amount)
-  'true up',
-  'trueup',
-  'true-up',
-  'rue up',  // typo variant seen in some ledgers
+  // Rent adjustments (only if explicitly about rent)
   'rent adjustment',
   'rent correction',
   'rent updated',
@@ -372,7 +368,17 @@ export function classifyDescription(description: string): ClassifiedDescription 
     };
   }
 
-  return { isPayment: false, isRentalCharge: false, isNonRentalCharge: false, isBalanceForward: false };
+  // DEFAULT BEHAVIOR: If we can't classify a charge as rental or payment,
+  // treat it as NON-RENTAL. This ensures charges like "True up", "adjustment",
+  // "renewal presented" etc. are counted as non-rental by default.
+  // Better to include uncertain charges in non-rental than to miss them.
+  return { 
+    isPayment: false, 
+    isRentalCharge: false, 
+    isNonRentalCharge: true,  // DEFAULT TO NON-RENTAL for unknown charges
+    isBalanceForward: false,
+    category: 'other',
+  };
 }
 
 export function parseMoney(raw: string): number | null {
