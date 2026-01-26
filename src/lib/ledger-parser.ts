@@ -32,7 +32,8 @@ const PAYMENT_KEYWORDS = [
   'ach',
   'eft',
   'wire',
-  'check',
+  // NOTE: Removed generic 'check' - it caused false positives for 'Returned check charge' (NSF).
+  // Keep 'chk' which matches payment references like 'chk#123456'
   'chk',
   'money order',
   'clickpay',
@@ -96,7 +97,9 @@ const NON_RENT_KEYWORDS: Array<{ keyword: string; category: ChargeCategory }> = 
   { keyword: 'nsf', category: 'bad_check' },
   { keyword: 'bad check', category: 'bad_check' },
   { keyword: 'returned check', category: 'bad_check' },
+  { keyword: 'bounced check', category: 'bad_check' },
   { keyword: 'security deposit', category: 'security_deposit' },
+  { keyword: 'secdep', category: 'security_deposit' },
   { keyword: 'deposit', category: 'security_deposit' },
   { keyword: 'maintenance', category: 'maintenance' },
   { keyword: 'repair', category: 'maintenance' },
@@ -108,6 +111,13 @@ const NON_RENT_KEYWORDS: Array<{ keyword: string; category: ChargeCategory }> = 
   { keyword: 'gas', category: 'utilities' },
   { keyword: 'utility', category: 'utilities' },
   { keyword: 'utilities', category: 'utilities' },
+  // Utility meter reading patterns (common in Resident Ledger format)
+  { keyword: 'readings:', category: 'utilities' },
+  { keyword: 'meter#', category: 'utilities' },
+  { keyword: 'usage=', category: 'utilities' },
+  { keyword: 'cost_kwh', category: 'utilities' },
+  { keyword: 'salestax=', category: 'utilities' },
+  { keyword: 'period:', category: 'utilities' },
   { keyword: 'internet', category: 'internet' },
   { keyword: 'wifi', category: 'internet' },
   { keyword: 'broadband', category: 'internet' },
@@ -156,9 +166,30 @@ export function classifyDescription(description: string): ClassifiedDescription 
     };
   }
 
-  // CRITICAL: Check payment keywords BEFORE non-rent keywords to avoid misclassifying credits.
+  // IMPORTANT: Check for specific non-rent charge patterns FIRST (like NSF, returned check)
+  // before checking payment keywords, to avoid false positives.
+  // Example: "Returned check charge" should be NSF (non-rent), not payment.
+  const specificNonRentPatterns = [
+    { pattern: 'returned check', category: 'bad_check' as ChargeCategory },
+    { pattern: 'bounced check', category: 'bad_check' as ChargeCategory },
+    { pattern: 'nsf', category: 'bad_check' as ChargeCategory },
+    { pattern: 'bad check', category: 'bad_check' as ChargeCategory },
+  ];
+  for (const { pattern, category } of specificNonRentPatterns) {
+    if (d.includes(pattern)) {
+      return {
+        isPayment: false,
+        isRentalCharge: false,
+        isNonRentalCharge: true,
+        isBalanceForward: false,
+        category,
+      };
+    }
+  }
+
+  // Check payment keywords AFTER specific non-rent patterns.
   // Example: "NSF receipt ... Uncollected Funds" is a PAYMENT (bounced check reversal), not a charge.
-  // Priority: receipt/reversal/refund wins over "nsf" keyword.
+  // Priority: receipt/reversal/refund indicates payment/credit.
   const isPayment = PAYMENT_KEYWORDS.some((k) => d.includes(k));
   if (isPayment) {
     return {

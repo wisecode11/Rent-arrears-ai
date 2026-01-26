@@ -484,30 +484,29 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   let nonRentMethod: CalculationTrace['step2']['method'] = 'all-nonrental-fallback';
   let nonRentItems: CalculationTraceNonRentItem[] = [];
   let nonRentNote: string | undefined;
-  
+
   // Preferred: ledger-order calculation (matches "from that point onward" even within the same date)
+  // SIMPLE LOGIC: After last zero/negative, count ALL non-rental charges. Only filter security deposits.
   if (typeof lastZeroOrNegativeIndex === 'number' && sortedLedgerEntries && sortedLedgerEntries.length > 0) {
     nonRentMethod = 'ledger-order';
     // Count only entries AFTER the last <= 0 balance row.
     for (let i = lastZeroOrNegativeIndex + 1; i < sortedLedgerEntries.length; i++) {
       const entry = sortedLedgerEntries[i];
       const debit = entry.debit ?? 0;
+      
+      // Only count positive debits (charges)
       if (debit <= 0) continue;
 
-      // Payments/credits should not be counted here.
       const cls = classifyDescription(entry.description);
-      // Balance-forward/opening-balance rows should never be treated as charges.
-      const isPaymentLike = cls.isPayment || cls.isBalanceForward || (entry.credit ?? 0) > 0;
-      if (isPaymentLike) continue;
-
-      // Only exclude clear rent charges; everything else counts toward non-rent.
+      
+      // Skip rent charges
       const isRentLike = entry.isRental === true || cls.isRentalCharge;
       if (isRentLike) continue;
 
       // If security deposits were later settled, exclude them from non-rent totals.
       if (ignoreSecurityDeposits && cls.category === 'security_deposit') continue;
 
-      // Use Math.abs to ensure positive amount (matches old code behavior)
+      // COUNT EVERYTHING ELSE AS NON-RENTAL (late fees, NSF, utilities, etc.)
       totalNonRentalFromLastZero += Math.abs(debit);
       nonRentItems.push({
         date: entry.date,
@@ -518,11 +517,17 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       });
     }
   } else if (lastZeroOrNegativeBalanceDate) {
-    // Backup: date-only filter (inclusive)
+    // Backup: date-only filter (AFTER the zero date)
+    // SIMPLE LOGIC: Just filter by date, no complex filtering
     nonRentMethod = 'date-only';
-    nonRentNote = 'Ledger ordering unavailable; used date-only filter (inclusive).';
+    nonRentNote = 'Ledger ordering unavailable; used date-only filter (after last zero date).';
     const lastZeroDate = new Date(lastZeroOrNegativeBalanceDate);
-    const included = (filteredNonRentalCharges ?? []).filter((c) => c.date && new Date(c.date) >= lastZeroDate);
+    const included = (filteredNonRentalCharges ?? []).filter((c) => {
+      if (!c.date) return false;
+      const chargeDate = new Date(c.date);
+      // Use strict '>' to match ledger-order behavior (AFTER the zero balance, not on same day)
+      return chargeDate.getTime() > lastZeroDate.getTime();
+    });
     totalNonRentalFromLastZero = included.reduce((sum, c) => {
       const amt = typeof c.amount === 'number' && !Number.isNaN(c.amount) ? c.amount : 0;
       return sum + Math.max(0, amt);
@@ -535,9 +540,13 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     }));
   } else {
     // Fallback: if no ledger entries or last zero date, use all non-rental charges
+    // SIMPLE LOGIC: No filtering, just use all non-rental charges
     nonRentMethod = 'all-nonrental-fallback';
     nonRentNote = 'No ledger entries / no last-zero date; using all non-rental charges.';
-    totalNonRentalFromLastZero = totalNonRental;
+    totalNonRentalFromLastZero = (filteredNonRentalCharges ?? []).reduce((sum, c) => {
+      const amt = typeof c.amount === 'number' && !Number.isNaN(c.amount) ? c.amount : 0;
+      return sum + Math.max(0, amt);
+    }, 0);
     nonRentItems = (filteredNonRentalCharges ?? []).map((c) => ({
       date: c.date ?? '',
       description: c.description,
@@ -643,8 +652,12 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   // FINAL: Always use the calculated latestBalance (which prioritizes finalBalance)
   const finalLatestBalance = latestBalance;
   
-  // CRITICAL: If Step 2 found ZERO non-rent charges after last-zero, DO NOT fallback to "all non-rental".
-  // Zero means zero. Fallback would incorrectly inflate charges from before the last-zero date.
+  // CRITICAL: Do NOT fallback to totalNonRental when totalNonRentalFromLastZero is 0.
+  // Client rule: "Add up non-rent charges FROM THAT POINT ONWARD" - if there are no
+  // non-rent charges after the last zero/negative balance, the correct answer is 0.
+  // Fallback would incorrectly include charges from BEFORE the last zero date.
+  // Note: When no zero/negative balance exists at all, the 'all-nonrental-fallback'
+  // method already sets totalNonRentalFromLastZero = totalNonRental appropriately.
   const finalTotalNonRentalFromLastZero = totalNonRentalFromLastZero;
 
   const calculationTrace: CalculationTrace = {
