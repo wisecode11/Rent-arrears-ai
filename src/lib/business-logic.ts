@@ -486,7 +486,7 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   let nonRentNote: string | undefined;
 
   // Preferred: ledger-order calculation (matches "from that point onward" even within the same date)
-  // SIMPLE LOGIC: After last zero/negative, count ALL non-rental charges. Only filter security deposits.
+  // SIMPLE LOGIC: After last zero/negative, count ALL non-rental charges. Only filter security deposits and payments.
   if (typeof lastZeroOrNegativeIndex === 'number' && sortedLedgerEntries && sortedLedgerEntries.length > 0) {
     nonRentMethod = 'ledger-order';
     // Count only entries AFTER the last <= 0 balance row.
@@ -499,6 +499,9 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
 
       const cls = classifyDescription(entry.description);
       
+      // Skip payments (even if they appear in debit column - like HRA checks)
+      if (cls.isPayment) continue;
+
       // Skip rent charges
       const isRentLike = entry.isRental === true || cls.isRentalCharge;
       if (isRentLike) continue;
