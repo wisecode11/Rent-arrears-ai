@@ -159,6 +159,16 @@ const NON_RENT_KEYWORDS: Array<{ keyword: string; category: ChargeCategory }> = 
   { keyword: 'maintenance', category: 'maintenance' },
   { keyword: 'repair', category: 'maintenance' },
   { keyword: 'work order', category: 'maintenance' },
+  // Use and Occupancy charges (UAO) - common adjustment type
+  { keyword: 'use of occupancy', category: 'other' },
+  { keyword: 'use and occupancy', category: 'other' },
+  { keyword: 'true up', category: 'other' },
+  { keyword: 'trueup', category: 'other' },
+  { keyword: 'true-up', category: 'other' },
+  { keyword: 'rue up', category: 'other' },  // typo variant
+  { keyword: 'adjustment', category: 'other' },
+  { keyword: 'reposted', category: 'other' },
+  { keyword: 'wrong entry', category: 'other' },
   { keyword: 'water', category: 'utilities' },
   { keyword: 'sewer', category: 'utilities' },
   { keyword: 'trash', category: 'utilities' },

@@ -628,6 +628,39 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     const fullLine = blockLines.join(' ');
     let cleanedForExtraction = fullLine;
     
+    // =========================================================================
+    // UNIVERSAL DESCRIPTION AMOUNT FILTERING
+    // Remove ALL amounts that appear in description context (not column values)
+    // These patterns indicate amounts mentioned in text, not actual charges
+    // =========================================================================
+    
+    // Pattern: "$XXX.XX/mth" or "$XXX.XX/month" or "$XXX.XX/mo" - rental rate mentions
+    cleanedForExtraction = cleanedForExtraction.replace(/\$[\d,]+\.\d{2}\s*\/\s*(?:mth|month|mo)\b/gi, '___');
+    
+    // Pattern: "$XXX.XX per month" or "XXX.XX per mth"
+    cleanedForExtraction = cleanedForExtraction.replace(/\$?[\d,]+\.\d{2}\s*per\s*(?:mth|month|mo)\b/gi, '___');
+    
+    // Pattern: "charges shd have been $XXX.XX" or "should have been $XXX.XX" or "should be $XXX.XX"
+    cleanedForExtraction = cleanedForExtraction.replace(/(?:charges?\s+)?(?:shd|should)\s+(?:have\s+)?be(?:en)?\s+\$?[\d,]+\.\d{2}/gi, '___');
+    
+    // Pattern: "been $XXX.XX/mth" - common in adjustment descriptions
+    cleanedForExtraction = cleanedForExtraction.replace(/been\s+\$?[\d,]+\.\d{2}\s*\/?\s*(?:mth|month|mo)?\b/gi, '___');
+    
+    // Pattern: "@ $XXX.XX" or "at $XXX.XX" - rate references
+    cleanedForExtraction = cleanedForExtraction.replace(/(?:@|at)\s*\$[\d,]+\.\d{2}/gi, '___');
+    
+    // Pattern: "rate of $XXX.XX" or "rate $XXX.XX"
+    cleanedForExtraction = cleanedForExtraction.replace(/rate\s*(?:of\s*)?\$?[\d,]+\.\d{2}/gi, '___');
+    
+    // Pattern: "from $XXX.XX to $YYY.YY" - rate change descriptions
+    cleanedForExtraction = cleanedForExtraction.replace(/from\s+\$?[\d,]+\.\d{2}\s+to\s+\$?[\d,]+\.\d{2}/gi, '___');
+    
+    // Pattern: "renewal ... $XXX.XX" - renewal rate mentions
+    cleanedForExtraction = cleanedForExtraction.replace(/renewal[^$]*\$[\d,]+\.\d{2}/gi, '___');
+    
+    // Pattern: Amount followed by "/mth" anywhere
+    cleanedForExtraction = cleanedForExtraction.replace(/[\d,]+\.\d{2}\s*\/\s*mth/gi, '___');
+    
     // For UTILITY rows: strip embedded amounts in description like "Amount=$128.51", "Salestax=$5.31"
     // These are NOT the actual charge - the charge is in the Charge column at the end.
     const isUtilityRow = rawCode.toLowerCase().includes('util') || 
@@ -1285,8 +1318,41 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     const [month, day, year] = dateStr.split('/');
     const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
     
-    // Extract all money amounts (handle parentheses as negative, e.g., (83.02) = -83.02)
-    let amounts = [...line.matchAll(moneyRegex)].map(m => {
+    // =========================================================================
+    // UNIVERSAL DESCRIPTION AMOUNT FILTERING
+    // Remove amounts that appear in description context (not actual column values)
+    // =========================================================================
+    let cleanedLine = line;
+    
+    // Pattern: "$XXX.XX/mth" or "$XXX.XX/month" or "$XXX.XX/mo" - rental rate mentions
+    cleanedLine = cleanedLine.replace(/\$[\d,]+\.\d{2}\s*\/\s*(?:mth|month|mo)\b/gi, '___');
+    
+    // Pattern: "$XXX.XX per month" or "XXX.XX per mth"
+    cleanedLine = cleanedLine.replace(/\$?[\d,]+\.\d{2}\s*per\s*(?:mth|month|mo)\b/gi, '___');
+    
+    // Pattern: "charges shd have been $XXX.XX" or "should have been $XXX.XX"
+    cleanedLine = cleanedLine.replace(/(?:charges?\s+)?(?:shd|should)\s+(?:have\s+)?be(?:en)?\s+\$?[\d,]+\.\d{2}/gi, '___');
+    
+    // Pattern: "been $XXX.XX/mth" - common in adjustment descriptions
+    cleanedLine = cleanedLine.replace(/been\s+\$?[\d,]+\.\d{2}\s*\/?\s*(?:mth|month|mo)?\b/gi, '___');
+    
+    // Pattern: "@ $XXX.XX" or "at $XXX.XX" - rate references
+    cleanedLine = cleanedLine.replace(/(?:@|at)\s*\$[\d,]+\.\d{2}/gi, '___');
+    
+    // Pattern: "rate of $XXX.XX" or "rate $XXX.XX"
+    cleanedLine = cleanedLine.replace(/rate\s*(?:of\s*)?\$?[\d,]+\.\d{2}/gi, '___');
+    
+    // Pattern: "from $XXX.XX to $YYY.YY" - rate change descriptions  
+    cleanedLine = cleanedLine.replace(/from\s+\$?[\d,]+\.\d{2}\s+to\s+\$?[\d,]+\.\d{2}/gi, '___');
+    
+    // Pattern: "renewal ... $XXX.XX" - renewal rate mentions
+    cleanedLine = cleanedLine.replace(/renewal[^$]*\$[\d,]+\.\d{2}/gi, '___');
+    
+    // Pattern: Amount followed by "/mth" anywhere
+    cleanedLine = cleanedLine.replace(/[\d,]+\.\d{2}\s*\/\s*mth/gi, '___');
+    
+    // Extract all money amounts from CLEANED line (handle parentheses as negative)
+    let amounts = [...cleanedLine.matchAll(moneyRegex)].map(m => {
       const raw = m[1];
       const isNegativeByParens = raw.startsWith('(') && raw.endsWith(')');
       const cleaned = raw.replace(/[(),]/g, '').replace(/,/g, '');
