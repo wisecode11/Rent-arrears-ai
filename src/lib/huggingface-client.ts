@@ -1,5 +1,14 @@
 import { HuggingFaceResponse } from '@/types';
 import { chargesFromLedgerEntries, classifyDescription, parseLedgerFromText } from '@/lib/ledger-parser';
+import { 
+  analyzeHeaders, 
+  identifyColumnType, 
+  logColumnMapping, 
+  createParserConfig,
+  HeaderAnalysis,
+  ParserConfig,
+  ColumnType
+} from '@/lib/column-mapper';
 
 function extractIssueDateISO(extractedText: string): string | undefined {
   const toISO = (mm: string, dd: string, yyyy: string) =>
@@ -197,6 +206,73 @@ PDF TEXT TO ANALYZE:
 `;
 
 /**
+ * Intelligently parse a header line into column names
+ * Handles various formats: tab-separated, space-separated, merged text, etc.
+ */
+function parseHeadersIntelligently(line: string): string[] {
+  // Known header patterns - sorted by length (longest first) for greedy matching
+  const knownHeaders = [
+    'Transaction Description', 'Transaction Date', 'Transaction Code', 'Transaction Type',
+    'Running Balance', 'Account Balance', 'Current Balance', 'Ending Balance',
+    'Fiscal Period', 'Charge Code', 'Charge Amount', 'Credit Amount', 'Debit Amount',
+    'Payment Amount', 'Balance Due', 'Amount Due', 'Amount Paid',
+    'Bldg/Unit', 'Building/Unit', 'Chg Code', 'Chg/Rec', 'Ctrl#',
+    'Description', 'Reference', 'Balance', 'Charges', 'Credits', 'Payment',
+    'Debit', 'Credit', 'Amount', 'Date', 'Code', 'Type', 'Memo', 'Unit', 'Flag',
+    'Dr', 'Cr', 'Bal', 'Desc', 'Ref'
+  ].sort((a, b) => b.length - a.length);
+  
+  const headers: string[] = [];
+  let remaining = line;
+  
+  // First try: tab-separated
+  const tabHeaders = line.split('\t').map(h => h.trim()).filter(Boolean);
+  if (tabHeaders.length >= 3) {
+    return tabHeaders;
+  }
+  
+  // Second try: multiple spaces (fixed-width format)
+  const spaceHeaders = line.split(/\s{2,}/).map(h => h.trim()).filter(Boolean);
+  if (spaceHeaders.length >= 3) {
+    return spaceHeaders;
+  }
+  
+  // Third try: intelligent pattern matching for merged text
+  // Match known headers in order of appearance
+  const matches: { header: string; index: number }[] = [];
+  
+  for (const header of knownHeaders) {
+    const regex = new RegExp(`\\b${header.replace(/[\/\-]/g, '\\$&')}\\b`, 'gi');
+    let match;
+    while ((match = regex.exec(remaining)) !== null) {
+      // Check if this position is already covered by a longer match
+      const alreadyCovered = matches.some(
+        m => match!.index >= m.index && match!.index < m.index + m.header.length
+      );
+      if (!alreadyCovered) {
+        matches.push({ header: match[0], index: match.index });
+      }
+    }
+  }
+  
+  // Sort by position in line and return
+  matches.sort((a, b) => a.index - b.index);
+  
+  if (matches.length >= 3) {
+    return matches.map(m => m.header);
+  }
+  
+  // Fallback: return space-separated words that look like headers
+  return line.split(/\s+/).filter(word => {
+    const lower = word.toLowerCase();
+    return ['date', 'code', 'description', 'charge', 'credit', 'debit', 
+            'payment', 'balance', 'amount', 'type', 'memo', 'unit', 'ref'].some(
+      kw => lower.includes(kw)
+    );
+  });
+}
+
+/**
  * Parse Resident Ledger format (different structure)
  * Format: Date | Chg Code | Description | Charge | Payment | Balance | Chg/Rec
  */
@@ -249,10 +325,47 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
   // Support multiple header formats:
   // 1. "Date | Chg Code | ... | Balance" (standard Resident Ledger)
   // 2. "Bldg/Unit | Transaction Date | ... | Transaction Code | ... | Balance" (Bldg/Unit format)
+  // Now using intelligent column detection for dynamic header recognition
   let dataStartIndex = 0;
+  let detectedHeaderAnalysis: HeaderAnalysis | null = null;
+  let detectedHeaders: string[] = [];
+  
+  // Intelligent header detection - recognizes various column naming conventions
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    // Standard format
+    const lineLower = line.toLowerCase();
+    
+    // Look for lines that contain multiple column-related keywords
+    const columnKeywords = [
+      'date', 'balance', 'charge', 'credit', 'debit', 'payment',
+      'description', 'code', 'amount', 'transaction', 'memo', 'type'
+    ];
+    
+    let keywordMatches = 0;
+    for (const keyword of columnKeywords) {
+      if (lineLower.includes(keyword)) {
+        keywordMatches++;
+      }
+    }
+    
+    // If we find at least 3 keywords, this is likely a header row
+    if (keywordMatches >= 3) {
+      // Parse headers intelligently
+      detectedHeaders = parseHeadersIntelligently(line);
+      
+      if (detectedHeaders.length >= 3) {
+        // Analyze the detected headers
+        detectedHeaderAnalysis = analyzeHeaders(detectedHeaders);
+        logColumnMapping(detectedHeaderAnalysis);
+        
+        dataStartIndex = i + 1;
+        console.log('🔍 Intelligent header detection found headers at line', i);
+        console.log('🔍 Detected headers:', detectedHeaders);
+        break;
+      }
+    }
+    
+    // Fallback: Standard format patterns
     if (line.includes('Date') && line.includes('Chg Code') && line.includes('Balance')) {
       dataStartIndex = i + 1;
       break;
@@ -292,6 +405,54 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
   //   [charge] [payment] [balance] [optional control#]
   // or:
   //   [amount] [balance] [optional control#]
+  
+  // Intelligent date detection - handles multiple formats:
+  // MM/DD/YYYY, MM-DD-YYYY, YYYY-MM-DD, DD/MM/YYYY, etc.
+  const DATE_PATTERNS = [
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s*/,           // MM/DD/YYYY
+    /^(\d{1,2})-(\d{1,2})-(\d{4})\s*/,             // MM-DD-YYYY
+    /^(\d{4})-(\d{2})-(\d{2})\s*/,                 // YYYY-MM-DD
+    /^(\d{1,2})\.(\d{1,2})\.(\d{4})\s*/,           // DD.MM.YYYY
+    /^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})\s*/,   // Jan 15, 2024
+  ];
+  
+  const parseFlexibleDate = (dateStr: string): string | null => {
+    // MM/DD/YYYY or MM-DD-YYYY
+    let match = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (match) {
+      const [, month, day, year] = match;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+    
+    // YYYY-MM-DD
+    match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+      return `${match[1]}-${match[2]}-${match[3]}`;
+    }
+    
+    // DD.MM.YYYY (European)
+    match = dateStr.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+    if (match) {
+      const [, day, month, year] = match;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+    
+    // Month name format: Jan 15, 2024
+    const monthNames: Record<string, string> = {
+      jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+      jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
+    };
+    match = dateStr.match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})/);
+    if (match) {
+      const monthNum = monthNames[match[1].toLowerCase()];
+      if (monthNum) {
+        return `${match[3]}-${monthNum}-${match[2].padStart(2, '0')}`;
+      }
+    }
+    
+    return null;
+  };
+  
   const DATE_PREFIX_REGEX = /^(\d{1,2}\/\d{1,2}\/\d{4})\s+/;
   const moneyToken = String.raw`\(?-?\$?(?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2}\)?`;
   const moneyTokenRegex = new RegExp(moneyToken, 'gi');

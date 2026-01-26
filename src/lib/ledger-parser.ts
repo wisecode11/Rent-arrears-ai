@@ -24,6 +24,56 @@ export interface ClassifiedDescription {
   category?: ChargeCategory;
 }
 
+/**
+ * Intelligent keyword matching that handles:
+ * - Exact matches
+ * - Word variations (plural, verb forms)
+ * - Abbreviations
+ * - Combined/merged text (no spaces)
+ * - CamelCase and concatenated words
+ */
+function intelligentKeywordMatch(text: string, keyword: string): boolean {
+  const t = text.toLowerCase();
+  const k = keyword.toLowerCase();
+  
+  // Exact match
+  if (t.includes(k)) return true;
+  
+  // Handle merged text (no spaces): "latecharge" matches "late charge"
+  const mergedKeyword = k.replace(/\s+/g, '');
+  if (t.includes(mergedKeyword)) return true;
+  
+  // Handle CamelCase: "LateCharge" matches "late charge"
+  const camelKeyword = k.replace(/\s+(\w)/g, (_, c) => c.toUpperCase());
+  if (t.includes(camelKeyword.toLowerCase())) return true;
+  
+  // Handle common abbreviations
+  const abbreviations: Record<string, string[]> = {
+    'payment': ['pmt', 'pymt', 'pay'],
+    'charge': ['chg', 'chrg'],
+    'deposit': ['dep', 'dpt'],
+    'security': ['sec', 'scty'],
+    'maintenance': ['maint', 'mnt'],
+    'electric': ['elec', 'elct'],
+    'utility': ['util'],
+    'water': ['wtr'],
+    'internet': ['inet', 'int'],
+    'administrative': ['admin', 'adm'],
+    'late fee': ['lf', 'latefee', 'latechg', 'late chg'],
+    'nsf': ['nsf fee', 'nsffee', 'bounced', 'returned'],
+  };
+  
+  for (const [full, abbrs] of Object.entries(abbreviations)) {
+    if (k.includes(full)) {
+      for (const abbr of abbrs) {
+        if (t.includes(abbr)) return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
 const PAYMENT_KEYWORDS = [
   'payment',
   'paid',
@@ -162,7 +212,8 @@ export function classifyDescription(description: string): ClassifiedDescription 
   }
 
   // Balance-forward/opening-balance rows are NOT charges.
-  if (BALANCE_FORWARD_KEYWORDS.some((k) => d.includes(k))) {
+  // Use intelligent matching for variations like "BalanceForward", "bal fwd", etc.
+  if (BALANCE_FORWARD_KEYWORDS.some((k) => intelligentKeywordMatch(d, k))) {
     return {
       isPayment: false,
       isRentalCharge: false,
@@ -179,9 +230,11 @@ export function classifyDescription(description: string): ClassifiedDescription 
     { pattern: 'bounced check', category: 'bad_check' as ChargeCategory },
     { pattern: 'nsf', category: 'bad_check' as ChargeCategory },
     { pattern: 'bad check', category: 'bad_check' as ChargeCategory },
+    { pattern: 'uncollected funds', category: 'bad_check' as ChargeCategory },
+    { pattern: 'dishonored', category: 'bad_check' as ChargeCategory },
   ];
   for (const { pattern, category } of specificNonRentPatterns) {
-    if (d.includes(pattern)) {
+    if (intelligentKeywordMatch(d, pattern)) {
       return {
         isPayment: false,
         isRentalCharge: false,
@@ -195,7 +248,7 @@ export function classifyDescription(description: string): ClassifiedDescription 
   // Check payment keywords AFTER specific non-rent patterns.
   // Example: "NSF receipt ... Uncollected Funds" is a PAYMENT (bounced check reversal), not a charge.
   // Priority: receipt/reversal/refund indicates payment/credit.
-  const isPayment = PAYMENT_KEYWORDS.some((k) => d.includes(k));
+  const isPayment = PAYMENT_KEYWORDS.some((k) => intelligentKeywordMatch(d, k));
   if (isPayment) {
     return {
       isPayment: true,
@@ -206,8 +259,9 @@ export function classifyDescription(description: string): ClassifiedDescription 
   }
 
   // Explicit non-rent keywords (after payment check).
+  // Use intelligent matching for variations
   for (const { keyword, category } of NON_RENT_KEYWORDS) {
-    if (d.includes(keyword)) {
+    if (intelligentKeywordMatch(d, keyword)) {
       return {
         isPayment: false,
         isRentalCharge: false,
@@ -218,9 +272,10 @@ export function classifyDescription(description: string): ClassifiedDescription 
     }
   }
 
-  const hasRent = RENT_KEYWORDS.some((k) => d.includes(k));
+  // Check rent keywords with intelligent matching
+  const hasRent = RENT_KEYWORDS.some((k) => intelligentKeywordMatch(d, k));
   if (hasRent) {
-    const overridden = RENT_OVERRIDE_NON_RENT.some((k) => d.includes(k));
+    const overridden = RENT_OVERRIDE_NON_RENT.some((k) => intelligentKeywordMatch(d, k));
     if (overridden) {
       return {
         isPayment: false,
