@@ -424,10 +424,46 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     const chgCode = rawCode.toLowerCase().replace(/[^a-z0-9]/g, '');
 
     // Extract trailing amounts from the block.
-    // CRITICAL: Late fees have reference amounts IN description that must be excluded.
+    // CRITICAL: Late fees and utilities have reference amounts IN description that must be excluded.
     // Strategy: For late fees, extract from TAIL (last 2-3 amounts) and detect/remove duplicates.
     const fullLine = blockLines.join(' ');
     let cleanedForExtraction = fullLine;
+    
+    // For UTILITY rows: strip embedded amounts in description like "Amount=$128.51", "Salestax=$5.31"
+    // These are NOT the actual charge - the charge is in the Charge column at the end.
+    const isUtilityRow = rawCode.toLowerCase().includes('util') || 
+                         fullLine.toLowerCase().includes('period:') || 
+                         fullLine.toLowerCase().includes('readings:') ||
+                         fullLine.toLowerCase().includes('cost_kwh') ||
+                         fullLine.toLowerCase().includes('multiplier');
+    if (isUtilityRow) {
+      // Remove ALL embedded dollar amounts and patterns from utility descriptions
+      // Pattern: "Amount=$128.51" or "Amount$128.51" (with or without =)
+      cleanedForExtraction = cleanedForExtraction.replace(/Amount\s*=?\s*-?\$?[\d,]+\.\d{2}/gi, '___');
+      // Pattern: "Salestax=$5.31" or "Salestax$5.31"  
+      cleanedForExtraction = cleanedForExtraction.replace(/Salestax\s*=?\s*\$?[\d,]+\.\d{2}/gi, '___');
+      // Pattern: "Cost_KWH=SC1" or similar
+      cleanedForExtraction = cleanedForExtraction.replace(/Cost_KWH\s*=?\s*\S+/gi, '___');
+      // Pattern: "Readings:23358.70 - 24052.30" or "Readings:21141.20 - 21681.60"
+      cleanedForExtraction = cleanedForExtraction.replace(/Readings\s*:?\s*[\d,]+\.\d+\s*-\s*[\d,]+\.\d+/gi, '___');
+      // Pattern: "Usage=693.60" or "Usage 540.40"
+      cleanedForExtraction = cleanedForExtraction.replace(/Usage\s*=?\s*[\d,]+\.\d+/gi, '___');
+      // Pattern: METER#(s)1258194-10 or similar meter references
+      cleanedForExtraction = cleanedForExtraction.replace(/METER#?\(?s?\)?[\d\-]+/gi, '___');
+      // Pattern: "Period:10\3\2023 - 10\31\2023" - date ranges with backslashes
+      cleanedForExtraction = cleanedForExtraction.replace(/Period\s*:?\s*\d+\\\d+\\\d+\s*-\s*\d+\\\d+\\\d+/gi, '___');
+      // Pattern: "Period:1 1 2024 - 1 31 2024" - date ranges with spaces
+      cleanedForExtraction = cleanedForExtraction.replace(/Period\s*:?\s*\d+\s+\d+\s+\d+\s*-\s*\d+\s+\d+\s+\d+/gi, '___');
+      // Remove any remaining decimal numbers before the last 80 chars (keep only column area)
+      // This ensures we only get the actual Charge/Payment/Balance values at the end
+      if (cleanedForExtraction.length > 100) {
+        const rightPart = cleanedForExtraction.slice(-80);
+        const leftPart = cleanedForExtraction.slice(0, -80);
+        // Remove all money-like patterns from the description portion (left part)
+        const cleanedLeft = leftPart.replace(/\$?[\d,]+\.\d{2}/g, '___');
+        cleanedForExtraction = cleanedLeft + rightPart;
+      }
+    }
     
     // For late fees: strip description reference amounts using multiple patterns
     const isLateFeeRow = rawCode.toLowerCase().includes('late') || fullLine.toLowerCase().includes('late fee');
