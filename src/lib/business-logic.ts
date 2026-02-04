@@ -13,6 +13,55 @@ function isSecurityDepositLike(description: string): boolean {
 }
 
 /**
+ * Check if a security deposit has been paid by looking for matching payment amounts
+ * across all transactions. This works even if the payment doesn't explicitly mention
+ * "security deposit" - if a payment matches the deposit amount, it's treated as paid.
+ * 
+ * @param depositAmount - The security deposit amount to check
+ * @param ledgerEntries - All ledger entries to search through
+ * @param depositDate - Optional date of the security deposit (to only check payments on or after this date)
+ * @returns true if a matching payment is found, false otherwise
+ */
+export function isSecurityDepositPaidByMatchingPayment(
+  depositAmount: number,
+  ledgerEntries: LedgerEntry[],
+  depositDate?: string
+): boolean {
+  if (!ledgerEntries || ledgerEntries.length === 0) return false;
+  if (depositAmount <= 0) return false;
+
+  // Small tolerance for floating point comparison (0.01)
+  const tolerance = 0.01;
+  
+  // If depositDate is provided, only check payments on or after that date
+  const depositDateObj = depositDate ? new Date(depositDate) : undefined;
+  
+  for (const entry of ledgerEntries) {
+    // Skip if we have a deposit date and this entry is before it
+    if (depositDateObj) {
+      const entryDate = new Date(entry.date);
+      if (entryDate.getTime() < depositDateObj.getTime()) {
+        continue;
+      }
+    }
+    
+    // Check if this is a payment entry
+    const cls = classifyDescription(entry.description ?? '');
+    const isPayment = cls.isPayment || (entry.credit ?? 0) > 0;
+    
+    if (!isPayment) continue;
+    
+    // Check if the payment amount matches the security deposit amount
+    const paymentAmount = entry.credit ?? 0;
+    if (Math.abs(paymentAmount - depositAmount) <= tolerance) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+/**
  * Heuristic: If a ledger shows multiple security-deposit-related rows and later evidence indicates the
  * deposit was settled (e.g., refunded/reversed or explicitly zeroed), then we should treat that deposit
  * as paid/settled and exclude it from non-rental totals.
@@ -333,6 +382,46 @@ function pickLatestBalanceEntryByDateRule(
     };
   }
 
+  // IMPORTANT: Before applying month-based rule, check if there are any non-rent entries
+  // that should be prioritized. This handles cases where non-rent charges (like utilities)
+  // appear at the end of the ledger and should be used for the latest balance.
+  // Since step3LedgerEntries already filters out future-dated RENT entries after issue date,
+  // any non-rent entries in sortedNewest that are more recent than target month entries
+  // should be considered for the latest balance.
+  // Example: Issue date 04/28/2025, non-rent entry on 05/01/2025 - we should use it.
+  const latestNonRentEntry = sortedNewest.find((entry) => {
+    if (isRentEntry(entry)) return false;
+    if (isPaymentEntry(entry)) return false;
+    if ((entry.debit ?? 0) <= 0) return false;
+    return true;
+  });
+
+  // If we found a non-rent entry, check if it should be used instead of target month entry
+  if (latestNonRentEntry) {
+    // Check what we'd find in the target month
+    const targetMonthEntry = findLatestAnyInMonth(targetYear, targetMonth);
+    
+    // Use the latest non-rent entry if:
+    // 1. Target month has no entries, OR
+    // 2. The latest non-rent entry is more recent than target month entry
+    // This ensures we pick up non-rent charges at the end of the ledger (like utilities on 05/01/2025)
+    if (!targetMonthEntry || new Date(latestNonRentEntry.date).getTime() > new Date(targetMonthEntry.date).getTime()) {
+      const targetMonthISO = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
+      const entryDate = new Date(latestNonRentEntry.date);
+      const isAfterTargetMonth = entryDate.getFullYear() > targetYear || 
+        (entryDate.getFullYear() === targetYear && entryDate.getMonth() > targetMonth);
+      
+      return {
+        rule: usePrevMonth ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+',
+        targetMonthISO,
+        selected: latestNonRentEntry,
+        note: isAfterTargetMonth 
+          ? `Used latest non-rent entry (${latestNonRentEntry.date}) for latest balance, as it's more recent than target month (${targetMonthISO}).`
+          : `Used latest non-rent entry (${latestNonRentEntry.date}) for latest balance.`,
+      };
+    }
+  }
+
   for (let guard = 0; guard < 24; guard++) {
     const latestAny = findLatestAnyInMonth(targetYear, targetMonth);
     if (latestAny) {
@@ -487,11 +576,23 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
   let nonRentNote: string | undefined;
 
   // Helper: Check if a security deposit charge has been paid
-  // SIMPLE: Just check if this entry has a credit/payment in the same row
+  // Check both same-row credit and matching payments across all transactions
   const isSecurityDepositPaid = (depositEntry: LedgerEntry): boolean => {
-    // If the deposit entry itself has a credit/payment column value > 0, it's paid
+    // First check if the deposit entry itself has a credit/payment in the same row
     const credit = depositEntry.credit ?? 0;
-    return credit > 0;
+    if (credit > 0) return true;
+    
+    // Then check if there's a matching payment anywhere in the transactions
+    const depositAmount = depositEntry.debit ?? 0;
+    if (depositAmount > 0 && sortedLedgerEntries) {
+      return isSecurityDepositPaidByMatchingPayment(
+        depositAmount,
+        sortedLedgerEntries,
+        depositEntry.date
+      );
+    }
+    
+    return false;
   };
 
   // Preferred: ledger-order calculation (matches "from that point onward" even within the same date)
@@ -515,10 +616,11 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       const isRentLike = entry.isRental === true || cls.isRentalCharge;
       if (isRentLike) continue;
 
-      // Security deposit logic: Only skip if it has been PAID (credit > 0 in same row)
-      // If charge exists but no payment in same row, ADD it to non-rental
+      // Security deposit logic: Only skip if it has been PAID
+      // Check if payment exists (same row or matching payment amount in any transaction)
+      // If not paid, ADD it to non-rental
       if (cls.category === 'security_deposit') {
-        if (ignoreSecurityDeposits && isSecurityDepositPaid(entry)) {
+        if (isSecurityDepositPaid(entry)) {
           continue; // Skip - deposit was paid
         }
         // If not paid, fall through and add to non-rental

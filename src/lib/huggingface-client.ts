@@ -9,6 +9,7 @@ import {
   ParserConfig,
   ColumnType
 } from '@/lib/column-mapper';
+import { isSecurityDepositPaidByMatchingPayment } from '@/lib/business-logic';
 
 function extractIssueDateISO(extractedText: string): string | undefined {
   const toISO = (mm: string, dd: string, yyyy: string) =>
@@ -1526,6 +1527,32 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
   dedupedRental.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   dedupedNonRental.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   
+  // Filter out security deposits that have been paid (by matching payment amounts)
+  // This must happen AFTER sorting so we have all ledger entries available for checking
+  const filteredNonRental = dedupedNonRental.filter((charge) => {
+    // Only check security deposits
+    if (charge.category !== 'security_deposit') {
+      const desc = (charge.description ?? '').toLowerCase();
+      if (!desc.includes('security deposit') && !desc.includes('security deposits')) {
+        return true; // Keep non-security-deposit charges
+      }
+    }
+    
+    // For security deposits, check if they've been paid
+    const depositAmount = charge.amount ?? 0;
+    if (depositAmount <= 0) return true; // Keep if invalid amount
+    
+    // Check if a matching payment exists in any transaction
+    const isPaid = isSecurityDepositPaidByMatchingPayment(
+      depositAmount,
+      dedupedLedger,
+      charge.date
+    );
+    
+    // Only keep security deposits that haven't been paid
+    return !isPaid;
+  });
+  
   // Final balance should be from the LAST entry (most recent) after sorting
   if (dedupedLedger.length > 0) {
     const lastEntry = dedupedLedger[dedupedLedger.length - 1];
@@ -1544,9 +1571,10 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     finalBalance,
     openingBalance,
     rentalCharges: dedupedRental.length,
-    nonRentalCharges: dedupedNonRental.length,
+    nonRentalCharges: filteredNonRental.length,
     ledgerEntries: dedupedLedger.length,
-    duplicatesRemoved: (ledgerEntries.length - dedupedLedger.length) + (rentalCharges.length - dedupedRental.length) + (nonRentalCharges.length - dedupedNonRental.length)
+    duplicatesRemoved: (ledgerEntries.length - dedupedLedger.length) + (rentalCharges.length - dedupedRental.length) + (nonRentalCharges.length - dedupedNonRental.length),
+    securityDepositsFiltered: dedupedNonRental.length - filteredNonRental.length
   });
   
   return {
@@ -1558,7 +1586,7 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     openingBalance: openingBalance || finalBalance || 0,
     finalBalance: finalBalance || openingBalance || 0,
     rentalCharges: dedupedRental,
-    nonRentalCharges: dedupedNonRental,
+    nonRentalCharges: filteredNonRental,
     ledgerEntries: dedupedLedger,
     issueDate,
   };
