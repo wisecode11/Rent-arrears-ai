@@ -62,41 +62,155 @@ export function isSecurityDepositPaidByMatchingPayment(
 }
 
 /**
- * Heuristic: If a ledger shows multiple security-deposit-related rows and later evidence indicates the
- * deposit was settled (e.g., refunded/reversed or explicitly zeroed), then we should treat that deposit
- * as paid/settled and exclude it from non-rental totals.
- *
- * Why: security deposits are often tracked as a separate bucket and may be paid/cleared later; users
- * don't want a previously-settled deposit inflating "non-rental charges".
+ * Check if a security deposit amount has been reversed/refunded by looking for matching
+ * NEGATIVE security deposit entries with the same amount.
+ * 
+ * Logic:
+ * - If a positive security deposit (e.g., 2,575.00) has a matching negative security deposit
+ *   entry (e.g., -2,575.00 or (2,575.00)) anywhere in the ledger, it means that deposit
+ *   was transferred/reversed/refunded, so we should NOT count it.
+ * - We only count security deposits that have NO matching negative entry.
+ * 
+ * @param depositAmount - The positive security deposit amount to check
+ * @param ledgerEntries - All ledger entries to search through
+ * @returns true if a matching negative security deposit entry exists (meaning it was reversed)
+ */
+export function isSecurityDepositReversedByNegativeEntry(
+  depositAmount: number,
+  ledgerEntries: LedgerEntry[]
+): boolean {
+  if (!ledgerEntries || ledgerEntries.length === 0) return false;
+  if (depositAmount <= 0) return false;
+
+  // Small tolerance for floating point comparison (0.01)
+  const tolerance = 0.01;
+  
+  for (const entry of ledgerEntries) {
+    // Only look at security deposit entries
+    if (!isSecurityDepositLike(entry.description ?? '')) continue;
+    
+    // Check for negative debit (some systems show negative charges)
+    const debit = entry.debit ?? 0;
+    // Check for credit entries (refund/reversal)
+    const credit = entry.credit ?? 0;
+    
+    // A reversal can appear as:
+    // 1. A negative debit with the same absolute value
+    // 2. A credit with the same value
+    // 3. A parenthesized amount (which is typically parsed as negative or as credit)
+    
+    if (debit < 0 && Math.abs(Math.abs(debit) - depositAmount) <= tolerance) {
+      // Negative debit matches the deposit amount - it's reversed
+      return true;
+    }
+    
+    if (credit > 0 && Math.abs(credit - depositAmount) <= tolerance) {
+      // Credit matches the deposit amount - it's reversed/refunded
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Get all valid security deposit amounts that should be counted as non-rental charges.
+ * 
+ * Rules:
+ * 1. Only count POSITIVE security deposit entries (debit > 0)
+ * 2. If a positive security deposit has a matching NEGATIVE entry (same amount), skip it
+ * 3. If two security deposits have DIFFERENT amounts, count both (if not reversed)
+ * 4. If two security deposits have the SAME amount and both are positive and not reversed,
+ *    count only ONE (to avoid double-counting)
+ * 
+ * @param ledgerEntries - All ledger entries
+ * @returns Array of security deposit amounts that should be counted
+ */
+export function getValidSecurityDepositsForNonRental(
+  ledgerEntries: LedgerEntry[]
+): { amount: number; date: string; description: string }[] {
+  if (!ledgerEntries || ledgerEntries.length === 0) return [];
+
+  const tolerance = 0.01;
+  const validDeposits: { amount: number; date: string; description: string }[] = [];
+  const countedAmounts = new Map<number, number>(); // amount -> count of times added
+  
+  // First pass: collect all security deposit entries with their amounts
+  const allSecurityDeposits: { entry: LedgerEntry; debit: number; credit: number }[] = [];
+  
+  for (const entry of ledgerEntries) {
+    if (!isSecurityDepositLike(entry.description ?? '')) continue;
+    
+    const debit = entry.debit ?? 0;
+    const credit = entry.credit ?? 0;
+    
+    allSecurityDeposits.push({ entry, debit, credit });
+  }
+  
+  // Second pass: for each positive security deposit, check if it's reversed
+  for (const { entry, debit, credit } of allSecurityDeposits) {
+    // Skip negative entries (these are reversals, not charges)
+    if (debit <= 0) continue;
+    
+    // Skip if this entry itself is a credit (refund)
+    if (credit > 0 && debit === 0) continue;
+    
+    const depositAmount = debit;
+    
+    // Check if this deposit amount has a matching negative entry (reversal)
+    const isReversed = isSecurityDepositReversedByNegativeEntry(depositAmount, ledgerEntries);
+    
+    if (isReversed) {
+      // This deposit was reversed, don't count it
+      continue;
+    }
+    
+    // Check if this deposit was paid
+    const isPaid = isSecurityDepositPaidByMatchingPayment(depositAmount, ledgerEntries, entry.date);
+    
+    if (isPaid) {
+      // This deposit was paid, don't count it
+      continue;
+    }
+    
+    // Check if we already counted this exact amount
+    // (to avoid double-counting identical deposits)
+    const roundedAmount = Math.round(depositAmount * 100) / 100;
+    const currentCount = countedAmounts.get(roundedAmount) || 0;
+    
+    // For same amounts, we only count once (unless they're truly different deposits)
+    // But if different amounts, we count each unique amount
+    if (currentCount === 0) {
+      validDeposits.push({
+        amount: depositAmount,
+        date: entry.date,
+        description: entry.description,
+      });
+      countedAmounts.set(roundedAmount, currentCount + 1);
+    }
+    // If same amount appears again and NOT reversed, we still only count once
+    // This handles the case where same deposit appears multiple times
+  }
+  
+  return validDeposits;
+}
+
+/**
+ * DEPRECATED: This old function used a blanket approach that was too aggressive.
+ * It would ignore ALL security deposits if ANY one of them was settled, which caused
+ * valid unpaid deposits to be missed.
+ * 
+ * NEW APPROACH: We now handle each security deposit individually using:
+ * - isSecurityDepositReversedByNegativeEntry(): Check if specific amount was reversed
+ * - isSecurityDepositPaidByMatchingPayment(): Check if specific amount was paid
+ * - getValidSecurityDepositsForNonRental(): Get only valid unpaid/unreversed deposits
+ * 
+ * This function is kept for reference but always returns FALSE now.
+ * The per-deposit logic is handled directly in the calculation loops.
  */
 function shouldIgnoreSecurityDepositCharges(ledgerEntries: LedgerEntry[]): boolean {
-  if (!ledgerEntries || ledgerEntries.length === 0) return false;
-
-  const idxs: number[] = [];
-  for (let i = 0; i < ledgerEntries.length; i++) {
-    if (isSecurityDepositLike(ledgerEntries[i].description ?? '')) idxs.push(i);
-  }
-
-  // If only one deposit row exists, keep it (caller may still want to count it).
-  if (idxs.length < 2) return false;
-
-  const firstIdx = idxs[0];
-  for (const i of idxs) {
-    if (i <= firstIdx) continue;
-    const e = ledgerEntries[i];
-    const d = normalizeDesc(e.description ?? '');
-    const hasSettlementKeyword =
-      d.includes('refund') || d.includes('return') || d.includes('reversal') || d.includes('reversed') || d.includes('reclass');
-    const credit = e.credit ?? 0;
-    const debit = e.debit ?? 0;
-    const bal = e.balance ?? 0;
-    const explicitZeroed = debit === 0 && credit === 0 && bal === 0;
-
-    // Treat as settled if we see explicit reversal/refund/reclass wording, a credit on a deposit row,
-    // or an explicit "0" style deposit row.
-    if (hasSettlementKeyword || credit > 0 || explicitZeroed) return true;
-  }
-
+  // Always return FALSE - we now handle each security deposit individually
+  // instead of ignoring all of them when any one is settled
   return false;
 }
 
@@ -616,18 +730,65 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       // These are account snapshots, NOT actual charges - they should never be counted
       if (cls.isBalanceForward) continue;
 
-      // Skip rent charges
-      const isRentLike = entry.isRental === true || cls.isRentalCharge;
-      if (isRentLike) continue;
+      // ============================================================================
+      // CRITICAL RENTAL CHECK - RENT MUST NEVER BE COUNTED AS NON-RENTAL
+      // Check multiple conditions to ensure rent charges are properly excluded
+      // ============================================================================
+      
+      // Check 1: Direct "RENT" word in description
+      const hasRentWord = /\brent\b/i.test(entry.description);
+      
+      // Check 2: Is it a payment-like entry?
+      const isPaymentLike = /\b(payment|paid|receipt|ach|eft|wire|chk|check|refund|reversal|reversed|void)\b/i.test(entry.description.toLowerCase());
+      
+      // Check 3: Is it an override category (parking rent, storage rent)?
+      const isOverrideNonRent = /\b(parking|garage|storage|pet)\s*(rent|rental)/i.test(entry.description.toLowerCase());
+      
+      // Check 4: Classification system says it's rental
+      const isRentByClassification = entry.isRental === true || cls.isRentalCharge;
+      
+      // SKIP if this is a rental charge (any of these conditions)
+      if (isRentByClassification) continue;
+      if (hasRentWord && !isPaymentLike && !isOverrideNonRent) continue;
 
-      // Security deposit logic: Only skip if it has been PAID
-      // Check if payment exists (same row or matching payment amount in any transaction)
-      // If not paid, ADD it to non-rental
+      // ============================================================================
+      // SECURITY DEPOSIT LOGIC - Complex handling for reversals and duplicates
+      // Rules:
+      // 1. Skip negative security deposits (they are reversals/refunds)
+      // 2. Skip positive security deposits if the same amount exists as negative (reversed)
+      // 3. If two deposits have DIFFERENT amounts and neither is reversed, count both
+      // 4. If two deposits have SAME amount and neither is reversed, count only once
+      // ============================================================================
       if (cls.category === 'security_deposit') {
-        if (isSecurityDepositPaid(entry)) {
+        // Rule 1: Already handled by debit <= 0 check above
+        
+        // Rule 2: Check if this deposit amount has been reversed (matching negative entry)
+        const isReversed = isSecurityDepositReversedByNegativeEntry(debit, sortedLedgerEntries);
+        if (isReversed) {
+          continue; // Skip - deposit was reversed/transferred out
+        }
+        
+        // Rule 3 & 4: Check if deposit was paid
+        const isPaidDirect = (entry.credit ?? 0) > 0; // Same-row payment
+        const isPaidMatching = isSecurityDepositPaidByMatchingPayment(debit, sortedLedgerEntries, entry.date);
+        if (isPaidDirect || isPaidMatching) {
           continue; // Skip - deposit was paid
         }
-        // If not paid, fall through and add to non-rental
+        
+        // Check for duplicate - if we already added this exact amount, skip it
+        const roundedDebit = Math.round(debit * 100) / 100;
+        const alreadyAdded = nonRentItems.some(item => {
+          const itemDesc = normalizeDesc(item.description);
+          const isSecDep = itemDesc.includes('security deposit') || itemDesc.includes('secdep');
+          const sameAmount = Math.abs(Math.round(item.amount * 100) / 100 - roundedDebit) < 0.01;
+          return isSecDep && sameAmount;
+        });
+        
+        if (alreadyAdded) {
+          continue; // Skip - already counted this exact security deposit amount
+        }
+        
+        // This security deposit is valid - fall through to add it
       }
 
       // COUNT EVERYTHING ELSE AS NON-RENTAL (late fees, NSF, utilities, etc.)
@@ -642,41 +803,114 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
     }
   } else if (lastZeroOrNegativeBalanceDate) {
     // Backup: date-only filter (AFTER the zero date)
-    // SIMPLE LOGIC: Just filter by date, no complex filtering
+    // Apply proper security deposit filtering: only include valid (unpaid, unreversed) deposits
     nonRentMethod = 'date-only';
     nonRentNote = 'Ledger ordering unavailable; used date-only filter (after last zero date).';
     const lastZeroDate = new Date(lastZeroOrNegativeBalanceDate);
-    const included = (filteredNonRentalCharges ?? []).filter((c) => {
+    
+    // Get valid security deposits that should be counted
+    const validSecurityDeposits = sortedLedgerEntries 
+      ? getValidSecurityDepositsForNonRental(sortedLedgerEntries)
+      : [];
+    const validSecurityDepositAmounts = new Set(
+      validSecurityDeposits.map(d => Math.round(d.amount * 100) / 100)
+    );
+    
+    // Filter by date first
+    const dateFiltered = (filteredNonRentalCharges ?? []).filter((c) => {
       if (!c.date) return false;
       const chargeDate = new Date(c.date);
-      // Use strict '>' to match ledger-order behavior (AFTER the zero balance, not on same day)
       return chargeDate.getTime() > lastZeroDate.getTime();
     });
-    totalNonRentalFromLastZero = included.reduce((sum, c) => {
-      const amt = typeof c.amount === 'number' && !Number.isNaN(c.amount) ? c.amount : 0;
-      return sum + Math.max(0, amt);
-    }, 0);
-    nonRentItems = included.map((c) => ({
-      date: c.date ?? lastZeroOrNegativeBalanceDate,
-      description: c.description,
-      amount: Math.max(0, typeof c.amount === 'number' && !Number.isNaN(c.amount) ? c.amount : 0),
-      category: c.category,
-    }));
+    
+    // Then apply security deposit filtering
+    const processedCharges: typeof nonRentItems = [];
+    const addedSecurityDepositAmounts = new Set<number>();
+    
+    for (const c of dateFiltered) {
+      const amt = typeof c.amount === 'number' && !Number.isNaN(c.amount) ? Math.max(0, c.amount) : 0;
+      if (amt <= 0) continue;
+      
+      const isSecDep = c.category === 'security_deposit' || 
+                       normalizeDesc(c.description).includes('security deposit') ||
+                       normalizeDesc(c.description).includes('secdep');
+      
+      if (isSecDep) {
+        const roundedAmt = Math.round(amt * 100) / 100;
+        if (validSecurityDepositAmounts.has(roundedAmt) && !addedSecurityDepositAmounts.has(roundedAmt)) {
+          processedCharges.push({
+            date: c.date ?? lastZeroOrNegativeBalanceDate,
+            description: c.description,
+            amount: amt,
+            category: c.category,
+          });
+          addedSecurityDepositAmounts.add(roundedAmt);
+        }
+      } else {
+        processedCharges.push({
+          date: c.date ?? lastZeroOrNegativeBalanceDate,
+          description: c.description,
+          amount: amt,
+          category: c.category,
+        });
+      }
+    }
+    
+    totalNonRentalFromLastZero = processedCharges.reduce((sum, c) => sum + c.amount, 0);
+    nonRentItems = processedCharges;
   } else {
     // Fallback: if no ledger entries or last zero date, use all non-rental charges
-    // SIMPLE LOGIC: No filtering, just use all non-rental charges
+    // Apply proper security deposit filtering: only include valid (unpaid, unreversed) deposits
     nonRentMethod = 'all-nonrental-fallback';
     nonRentNote = 'No ledger entries / no last-zero date; using all non-rental charges.';
-    totalNonRentalFromLastZero = (filteredNonRentalCharges ?? []).reduce((sum, c) => {
-      const amt = typeof c.amount === 'number' && !Number.isNaN(c.amount) ? c.amount : 0;
-      return sum + Math.max(0, amt);
-    }, 0);
-    nonRentItems = (filteredNonRentalCharges ?? []).map((c) => ({
-      date: c.date ?? '',
-      description: c.description,
-      amount: Math.max(0, typeof c.amount === 'number' && !Number.isNaN(c.amount) ? c.amount : 0),
-      category: c.category,
-    }));
+    
+    // Get valid security deposits that should be counted
+    const validSecurityDeposits = sortedLedgerEntries 
+      ? getValidSecurityDepositsForNonRental(sortedLedgerEntries)
+      : [];
+    const validSecurityDepositAmounts = new Set(
+      validSecurityDeposits.map(d => Math.round(d.amount * 100) / 100)
+    );
+    
+    // Filter non-rental charges: include valid security deposits, exclude reversed ones
+    const processedCharges: typeof nonRentItems = [];
+    const addedSecurityDepositAmounts = new Set<number>();
+    
+    for (const c of (filteredNonRentalCharges ?? [])) {
+      const amt = typeof c.amount === 'number' && !Number.isNaN(c.amount) ? Math.max(0, c.amount) : 0;
+      if (amt <= 0) continue;
+      
+      const isSecDep = c.category === 'security_deposit' || 
+                       normalizeDesc(c.description).includes('security deposit') ||
+                       normalizeDesc(c.description).includes('secdep');
+      
+      if (isSecDep) {
+        const roundedAmt = Math.round(amt * 100) / 100;
+        // Only include if this is a valid security deposit (not reversed, not paid)
+        // AND we haven't already added this exact amount
+        if (validSecurityDepositAmounts.has(roundedAmt) && !addedSecurityDepositAmounts.has(roundedAmt)) {
+          processedCharges.push({
+            date: c.date ?? '',
+            description: c.description,
+            amount: amt,
+            category: c.category,
+          });
+          addedSecurityDepositAmounts.add(roundedAmt);
+        }
+        // Skip reversed/paid security deposits or duplicates
+      } else {
+        // Non-security deposit charges: include as-is
+        processedCharges.push({
+          date: c.date ?? '',
+          description: c.description,
+          amount: amt,
+          category: c.category,
+        });
+      }
+    }
+    
+    totalNonRentalFromLastZero = processedCharges.reduce((sum, c) => sum + c.amount, 0);
+    nonRentItems = processedCharges;
   }
   
   // Step 3: Identify the correct latest balance based on today's date

@@ -282,6 +282,33 @@ function normalizeText(input: string): string {
 export function classifyDescription(description: string): ClassifiedDescription {
   const d = normalizeText(description);
 
+  // ============================================================================
+  // CRITICAL: CHECK RENT KEYWORDS FIRST - BEFORE ANYTHING ELSE
+  // This ensures that any description containing "rent" is classified as RENTAL
+  // and NEVER accidentally classified as non-rental.
+  // Examples: "Partial Residential Rent", "Base Rent", "Rent (01/2025)", etc.
+  // ============================================================================
+  
+  // Pattern 1: Contains the word "rent" (with word boundary to avoid "current", "parent", etc.)
+  // Must NOT be a payment-like description
+  const hasRentWord = /\brent\b/i.test(d);
+  const isLikelyPayment = /\b(payment|paid|receipt|ach|eft|wire|chk|check|refund|reversal|reversed|void|credit)\b/i.test(d);
+  
+  // If description contains "rent" and is NOT a payment, classify as RENTAL immediately
+  if (hasRentWord && !isLikelyPayment) {
+    // Double-check it's not an override category (parking rent, storage rent, etc.)
+    const isOverrideNonRent = /\b(parking|garage|storage|pet)\s*(rent|rental)/i.test(d);
+    if (!isOverrideNonRent) {
+      return {
+        isPayment: false,
+        isRentalCharge: true,
+        isNonRentalCharge: false,
+        isBalanceForward: false,
+        category: 'rent',
+      };
+    }
+  }
+
   // "Legal Rent" is still RENT (common wording in some tenant ledgers).
   // Without this, the generic "legal" keyword would incorrectly classify it as legal fees (non-rental).
   if (/legal\s*rent/.test(d)) {
@@ -718,18 +745,51 @@ export function chargesFromLedgerEntries(ledgerEntries: LedgerEntry[]): {
     if (cls.isBalanceForward) continue;
     if (cls.isPayment) continue;
 
-    // Check if this is a rental charge
-    // IMPORTANT: Prioritize isRental flag from ledger entry (set by charge code detection)
-    // Then fall back to classification if isRental is undefined
-    // CRITICAL: Also check description directly for "BASE RENT" or "RENT" as final fallback
+    // ============================================================================
+    // CRITICAL RENTAL CHECK - MULTIPLE LAYERS OF PROTECTION
+    // Ensures rent NEVER ends up in non-rental charges
+    // ============================================================================
     const descUpper = e.description.toUpperCase();
-    const isBaseRent = descUpper.includes('BASE RENT') || (descUpper.includes(' RENT') && !descUpper.includes('NON-RENTAL'));
+    const descLower = e.description.toLowerCase();
     
-    const isRental = e.isRental === true || 
-                     (e.isRental !== false && cls.isRentalCharge) ||
-                     (e.isRental !== false && isBaseRent && !cls.isPayment);
+    // Layer 1: Direct "RENT" word check (most reliable)
+    // Matches: "Rent", "Residential Rent", "Partial Rent", "Base Rent", "Rent (01/2025)", etc.
+    const hasRentWord = /\brent\b/i.test(e.description);
+    
+    // Layer 2: Check if it's a payment (should not be classified as rental charge)
+    const isPaymentLike = /\b(payment|paid|receipt|ach|eft|wire|chk|check|refund|reversal|reversed|void)\b/i.test(descLower);
+    
+    // Layer 3: Check for override categories (parking rent, storage rent = NOT base rent)
+    const isOverrideNonRent = /\b(parking|garage|storage|pet)\s*(rent|rental)/i.test(descLower);
+    
+    // Layer 4: Explicit charge code or flag from ledger entry
+    const isRentalByFlag = e.isRental === true;
+    
+    // Layer 5: Classification system result
+    const isRentalByClassification = cls.isRentalCharge;
+    
+    // Layer 6: Legacy check for "BASE RENT" or " RENT" in description
+    const isBaseRent = descUpper.includes('BASE RENT') || 
+                       (descUpper.includes(' RENT') && !descUpper.includes('NON-RENTAL'));
+    
+    // FINAL DECISION: Is this a rental charge?
+    // If ANY of these conditions are true AND it's not a payment/override, it's RENTAL
+    const isRental = (
+      isRentalByFlag ||
+      (e.isRental !== false && isRentalByClassification) ||
+      (e.isRental !== false && hasRentWord && !isPaymentLike && !isOverrideNonRent) ||
+      (e.isRental !== false && isBaseRent && !isPaymentLike)
+    );
     
     if (isRental) {
+      rentalCharges.push({ description: e.description, amount: debit, date: e.date });
+      continue;
+    }
+
+    // SAFEGUARD: Double-check before adding to non-rental
+    // If description contains "rent" word, do NOT add to non-rental (unless explicitly overridden)
+    if (hasRentWord && !isOverrideNonRent && !isPaymentLike) {
+      // This should never happen with the checks above, but just in case
       rentalCharges.push({ description: e.description, amount: debit, date: e.date });
       continue;
     }
