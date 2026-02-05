@@ -208,6 +208,15 @@ const BALANCE_FORWARD_KEYWORDS = [
   'prior balance',
   'balance carried forward',
   'balance b/f',
+  // "Balance as of" entries are account summaries, NOT actual charges
+  'balance as of',
+  'bal as of',
+  'balance thru',
+  'balance through',
+  // Summary/snapshot entries
+  'account summary',
+  'balance summary',
+  'account balance',
 ];
 
 const NON_RENT_KEYWORDS: Array<{ keyword: string; category: ChargeCategory }> = [
@@ -282,6 +291,19 @@ export function classifyDescription(description: string): ClassifiedDescription 
       isNonRentalCharge: false,
       isBalanceForward: false,
       category: 'rent',
+    };
+  }
+
+  // CRITICAL: Detect "as of MM/DD/YYYY" or "as of DATE" patterns - these are balance snapshots, NOT charges
+  // Examples: "Balance as of 05/10/2023", "as of 05/10/2023 681.50 2,547.25 4190"
+  // These entries show account state at a point in time and should NOT be treated as charges
+  const asOfDatePattern = /\bas\s*of\s*\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/i;
+  if (asOfDatePattern.test(d)) {
+    return {
+      isPayment: false,
+      isRentalCharge: false,
+      isNonRentalCharge: false,
+      isBalanceForward: true,
     };
   }
 

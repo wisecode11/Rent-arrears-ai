@@ -612,6 +612,10 @@ export function calculateFinalAmount(aiData: HuggingFaceResponse, asOfDate: Date
       // Skip payments (even if they appear in debit column - like HRA checks)
       if (cls.isPayment) continue;
 
+      // CRITICAL: Skip balance-forward entries (e.g., "Balance as of 05/10/2023", "AUTOCHRG @T3/31/2023")
+      // These are account snapshots, NOT actual charges - they should never be counted
+      if (cls.isBalanceForward) continue;
+
       // Skip rent charges
       const isRentLike = entry.isRental === true || cls.isRentalCharge;
       if (isRentLike) continue;
