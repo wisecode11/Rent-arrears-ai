@@ -1286,8 +1286,11 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     }
   }
   
+  // CRITICAL FIX: Coalesce multi-line ledger entries (e.g., description on one line, amounts on next line)
+  // This handles cases where entries like "06/28/2024 ... Reversed by\nNSF\n767.72 0.00" are split
+  const coalescedLines: string[] = [];
   for (let i = dataStartIndex; i < lines.length; i++) {
-    const line = normalizeLedgerLine(lines[i].trim());
+    let line = normalizeLedgerLine(lines[i].trim());
     
     // Skip page numbers, headers, and footer lines
     // IMPORTANT: Do NOT accidentally skip ledger rows like "6/1/2020 ...".
@@ -1305,6 +1308,85 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
         const parsed = parseFloat(lastNumber);
         if (!isNaN(parsed)) {
           // Preserve sign (some ledgers show negative balances).
+          finalBalance = parsed;
+          console.log('✅ Extracted final balance from TOTAL line:', finalBalance);
+        }
+      }
+      continue;
+    }
+    
+    const dateMatch = line.match(dateRegex);
+    if (!dateMatch) {
+      // If current line doesn't have a date but might be continuation of previous entry
+      // Check if previous coalesced line ended with description and this line has amounts
+      if (coalescedLines.length > 0) {
+        const prevLine = coalescedLines[coalescedLines.length - 1];
+        const prevHasDate = prevLine.match(dateRegex);
+        moneyRegex.lastIndex = 0;
+        const currentHasAmounts = moneyRegex.test(line);
+        moneyRegex.lastIndex = 0;
+        const prevHasAmounts = moneyRegex.test(prevLine);
+        // If previous line has date but no amounts, and current line has amounts, merge them
+        if (prevHasDate && currentHasAmounts && !prevHasAmounts) {
+          coalescedLines[coalescedLines.length - 1] = `${prevLine} ${line}`;
+          continue;
+        }
+      }
+      continue;
+    }
+    
+    // If we have a date, start a new entry
+    // But first, check if next lines should be merged (description continuation or amounts)
+    let buffer = line;
+    let j = i + 1;
+    while (j < lines.length) {
+      const nextLine = normalizeLedgerLine(lines[j].trim());
+      // Stop if next line has a date (new entry)
+      if (nextLine.match(dateRegex)) break;
+      // Stop if next line is a header/footer
+      if (nextLine.match(/^Page\b/i) || nextLine.match(/^Created on\b/i) || 
+          nextLine.match(/^\d+\s*\/\s*\d+\s*$/) || nextLine.toUpperCase().startsWith('TENANT LEDGER') ||
+          nextLine.toUpperCase().startsWith('DATE PAYER DESCRIPTION') || nextLine.toUpperCase().startsWith('TOTAL')) break;
+      
+      // Merge if next line has amounts (money values) or continues description
+      moneyRegex.lastIndex = 0; // Reset regex
+      const nextHasAmounts = moneyRegex.test(nextLine);
+      moneyRegex.lastIndex = 0; // Reset regex
+      const bufferHasAmounts = moneyRegex.test(buffer);
+      // If buffer doesn't have amounts yet but next line does, merge it
+      // Or if buffer ends with incomplete description (like "Reversed by") and next line continues it
+      if (nextHasAmounts && !bufferHasAmounts) {
+        buffer = `${buffer} ${nextLine}`;
+        j++;
+      } else if (!bufferHasAmounts && !nextHasAmounts && buffer.length < 200) {
+        // Merge description continuation (but limit length to avoid merging unrelated lines)
+        buffer = `${buffer} ${nextLine}`;
+        j++;
+      } else {
+        break;
+      }
+      if (j - i > 5) break; // Safety limit
+    }
+    i = j - 1; // Adjust i to skip merged lines
+    coalescedLines.push(buffer);
+  }
+  
+  // Now process coalesced lines
+  for (let i = 0; i < coalescedLines.length; i++) {
+    const line = coalescedLines[i];
+    
+    // Skip page numbers, headers, and footer lines
+    if (line.match(/^Page\b/i)) continue;
+    if (line.match(/^Created on\b/i)) continue;
+    if (line.match(/^\d+\s*\/\s*\d+\s*$/)) continue;
+    if (line.toUpperCase().startsWith('TENANT LEDGER')) continue;
+    if (line.toUpperCase().startsWith('DATE PAYER DESCRIPTION')) continue;
+    if (line.toUpperCase().startsWith('TOTAL')) {
+      const numbers = line.match(moneyRegex);
+      if (numbers && numbers.length > 0) {
+        const lastNumber = numbers[numbers.length - 1].replace(/,/g, '');
+        const parsed = parseFloat(lastNumber);
+        if (!isNaN(parsed)) {
           finalBalance = parsed;
           console.log('✅ Extracted final balance from TOTAL line:', finalBalance);
         }
@@ -1351,6 +1433,10 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     
     // Pattern: Amount followed by "/mth" anywhere
     cleanedLine = cleanedLine.replace(/[\d,]+\.\d{2}\s*\/\s*mth/gi, '___');
+    
+    // CRITICAL FIX: Handle concatenated money amounts (e.g., "767.720.00" should be split into "767.72" and "0.00")
+    // This must happen AFTER normalizeLedgerLine but BEFORE moneyRegex matching
+    cleanedLine = cleanedLine.replace(/(\d+\.\d{2})(\d+\.\d{2})/g, '$1 $2');
     
     // Extract all money amounts from CLEANED line (handle parentheses as negative)
     let amounts = [...cleanedLine.matchAll(moneyRegex)].map(m => {
