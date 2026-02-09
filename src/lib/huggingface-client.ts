@@ -525,8 +525,9 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     // Must have date + 6-digit fiscal period pattern
     if (!DATE_FISCAL_ROW.test(s)) return false;
     // Either has RESIDENT or has known transaction codes
+    // RNT = RENT (common abbreviation in some ledger systems)
     return /RESIDENT/i.test(s) || 
-           /LATEFEE|NSFFEE|PMTCHECK|PMTMORD|PMTOPACH|RENT\b|SECDEP/i.test(s) ||
+           /LATEFEE|NSFFEE|PMTCHECK|PMTMORD|PMTOPACH|RENT\b|RNT\b|SECDEP/i.test(s) ||
            /Late\s*Charge|NSF\s*Check/i.test(s);
   };
 
@@ -602,7 +603,8 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
       // Detect transaction code robustly from remainder (works even without spaces).
       const upper = remainder.toUpperCase();
       // Extended list of transaction codes for Bldg/Unit format
-      const codeMatch = upper.match(/(PMTOPACH|PMTMORD|PMTCHECK|PMTMONEY|LATEFEE|LATEFEES|LATECHG|NSFFEE|NSF|RENT|SECDEP|SECURITYDEPOSIT)/);
+      // RNT = RENT (common abbreviation in some ledger systems)
+      const codeMatch = upper.match(/(PMTOPACH|PMTMORD|PMTCHECK|PMTMONEY|LATEFEE|LATEFEES|LATECHG|NSFFEE|NSF|RENT|RNT|SECDEP|SECURITYDEPOSIT)/);
       rawCode = (codeMatch?.[1] ?? '').trim();
       
       // If no code matched but description contains "Late Charges", treat as LATEFEE
@@ -943,7 +945,8 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     const classified = classifyDescription(description);
 
     // Determine if rental or non-rental based on charge code + description fallback
-    const isRental = chgCode === 'affrent' || chgCode === 'rent' || classified.isRentalCharge;
+    // "rnt" = RENT code (common abbreviation in some ledger systems)
+    const isRental = chgCode === 'affrent' || chgCode === 'rent' || chgCode === 'rnt' || classified.isRentalCharge;
 
     // Payments should NEVER be counted as charges
     const isPayment =
@@ -1031,7 +1034,8 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
       const startIdx = raw.indexOf(m[0]) + m[0].length;
       const remainder = raw.slice(startIdx).trim();
       const upper = remainder.toUpperCase();
-      const codeMatch = upper.match(/(PMTOPACH|PMTMORD|PMTCHECK|LATEFEE|NSFFEE|RENT|SECDEP|SECURITYDEPOSIT)/);
+      // RNT = RENT (common abbreviation in some ledger systems)
+      const codeMatch = upper.match(/(PMTOPACH|PMTMORD|PMTCHECK|LATEFEE|NSFFEE|RENT|RNT|SECDEP|SECURITYDEPOSIT)/);
       const rawCode = (codeMatch?.[1] ?? '').trim();
 
       // Clean description amounts before extracting tail tokens
