@@ -496,6 +496,22 @@ function pickLatestBalanceEntryByDateRule(
     };
   }
 
+  // CRITICAL: If the issue/printed date is AFTER all ledger entries, use the absolute last
+  // balance in the ledger. This handles cases where the ledger was printed in the future
+  // (e.g., printed 04/18/2025 but last transaction is 03/21/2025).
+  // In this case, we should use the last transaction's balance regardless of rent/non-rent type.
+  const lastEntryDate = sortedNewest.length > 0 ? new Date(sortedNewest[0].date) : null;
+  if (lastEntryDate && asOfDate.getTime() > lastEntryDate.getTime()) {
+    // Issue date is after all ledger entries - use the absolute last balance
+    const targetMonthISO = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
+    return {
+      rule: usePrevMonth ? 'prev-month-if-day-1-5' : 'current-month-if-day-6+',
+      targetMonthISO,
+      selected: sortedNewest[0],
+      note: `Issue date (${asOfDate.toISOString().slice(0, 10)}) is after all ledger entries; using last ledger balance from ${sortedNewest[0].date}.`,
+    };
+  }
+
   // IMPORTANT: Before applying month-based rule, check if there are any non-rent entries
   // that should be prioritized. This handles cases where non-rent charges (like utilities)
   // appear at the end of the ledger and should be used for the latest balance.

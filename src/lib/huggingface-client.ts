@@ -635,6 +635,14 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
     // These patterns indicate amounts mentioned in text, not actual charges
     // =========================================================================
     
+    // Pattern: "$XXX.XX (MM/YYYY-MM/YYYY)" or "$XXX.XX(MM/YYYY-MM/YYYY)" - amounts with date ranges in parentheses
+    // Example: "Scrie/Drie Adjustment$730.81 (12/2023-10/2024)" - the $730.81 is NOT the charge amount
+    cleanedForExtraction = cleanedForExtraction.replace(/\$[\d,]+\.?\d*\s*\(\d{1,2}\/\d{4}\s*-\s*\d{1,2}\/\d{4}\)/gi, '(___)');
+    
+    // Pattern: Amount immediately before or after parenthesized date range (without $)
+    // Example: "Adjustment730.81 (12/2023-10/2024)" or "730.81(12/2023-10/2024)"
+    cleanedForExtraction = cleanedForExtraction.replace(/[\d,]+\.?\d{0,2}\s*\(\d{1,2}\/\d{4}\s*-\s*\d{1,2}\/\d{4}\)/gi, '(___)');
+    
     // Pattern: "$XXX.XX/mth" or "$XXX.XX/month" or "$XXX.XX/mo" - rental rate mentions
     cleanedForExtraction = cleanedForExtraction.replace(/\$[\d,]+\.\d{2}\s*\/\s*(?:mth|month|mo)\b/gi, '___');
     
@@ -1026,7 +1034,12 @@ export function parseResidentLedgerFormat(extractedText: string): HuggingFaceRes
       const codeMatch = upper.match(/(PMTOPACH|PMTMORD|PMTCHECK|LATEFEE|NSFFEE|RENT|SECDEP|SECURITYDEPOSIT)/);
       const rawCode = (codeMatch?.[1] ?? '').trim();
 
-      const tokens = extractTailMoneyTokens(raw);
+      // Clean description amounts before extracting tail tokens
+      // Pattern: "$XXX.XX (MM/YYYY-MM/YYYY)" - amounts with date ranges in descriptions
+      let cleanedRaw = raw.replace(/\$[\d,]+\.?\d*\s*\(\d{1,2}\/\d{4}\s*-\s*\d{1,2}\/\d{4}\)/gi, '(___)');
+      cleanedRaw = cleanedRaw.replace(/[\d,]+\.?\d{0,2}\s*\(\d{1,2}\/\d{4}\s*-\s*\d{1,2}\/\d{4}\)/gi, '(___)');
+
+      const tokens = extractTailMoneyTokens(cleanedRaw);
       const tailTokens =
         tokens.length >= 3 ? tokens.slice(-3) : tokens.length >= 2 ? tokens.slice(-2) : tokens;
       if (tailTokens.length < 2) continue;
@@ -1406,6 +1419,14 @@ function parseTenantLedgerFormat(extractedText: string): HuggingFaceResponse {
     // Remove amounts that appear in description context (not actual column values)
     // =========================================================================
     let cleanedLine = line;
+    
+    // Pattern: "$XXX.XX (MM/YYYY-MM/YYYY)" or "$XXX.XX(MM/YYYY-MM/YYYY)" - amounts with date ranges in parentheses
+    // Example: "Scrie/Drie Adjustment$730.81 (12/2023-10/2024)" - the $730.81 is NOT the charge amount
+    cleanedLine = cleanedLine.replace(/\$[\d,]+\.?\d*\s*\(\d{1,2}\/\d{4}\s*-\s*\d{1,2}\/\d{4}\)/gi, '(___)');
+    
+    // Pattern: Amount immediately before or after parenthesized date range (without $)
+    // Example: "Adjustment730.81 (12/2023-10/2024)" or "730.81(12/2023-10/2024)"
+    cleanedLine = cleanedLine.replace(/[\d,]+\.?\d{0,2}\s*\(\d{1,2}\/\d{4}\s*-\s*\d{1,2}\/\d{4}\)/gi, '(___)');
     
     // Pattern: "$XXX.XX/mth" or "$XXX.XX/month" or "$XXX.XX/mo" - rental rate mentions
     cleanedLine = cleanedLine.replace(/\$[\d,]+\.\d{2}\s*\/\s*(?:mth|month|mo)\b/gi, '___');
